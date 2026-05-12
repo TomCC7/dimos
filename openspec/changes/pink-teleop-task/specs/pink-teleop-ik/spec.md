@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Shared Pink IK base task provides common solver plumbing
-The system SHALL provide a shared Pink IK base task for teleoperation control tasks that owns common Pink solver setup, current-joint extraction, target state management, safety checks, and coordinator-compatible joint command output.
+The system SHALL provide a shared Pink IK base task for teleoperation control tasks that owns common Pink solver setup, current-joint extraction, target-update hooks, safety checks, and coordinator-compatible joint command output.
 
 #### Scenario: Base task uses coordinator timing
 - **WHEN** the control coordinator calls a Pink-backed teleop IK task with `CoordinatorState`
@@ -15,6 +15,10 @@ The system SHALL provide a shared Pink IK base task for teleoperation control ta
 - **WHEN** an IK result would move any controlled joint beyond the configured per-tick delta limit
 - **THEN** the task SHALL reject that command for the tick and SHALL NOT publish unsafe joint positions
 
+#### Scenario: Base task does not assume a single end-effector target
+- **WHEN** a Pink-backed task constructs one or more robot-specific frame tasks
+- **THEN** the shared base SHALL allow the concrete task to update its own frame targets before solving and SHALL NOT require all subclasses to use only `frame_tasks[0]`, one target pose, or one captured end-effector baseline
+
 ### Requirement: XArm7 Pink IK task constructs an XArm7-specific IK problem
 The system SHALL provide an XArm7-specific Pink teleop IK task that subclasses the shared Pink IK base and constructs the Pink problem for the XArm7 model used by existing XArm7 teleop blueprints.
 
@@ -25,6 +29,10 @@ The system SHALL provide an XArm7-specific Pink teleop IK task that subclasses t
 #### Scenario: XArm7 task creates a single end-effector frame task
 - **WHEN** the XArm7 Pink IK task initializes its robot-specific IK problem
 - **THEN** it SHALL construct exactly one Pink frame task for the configured XArm7 end-effector frame and SHALL fail startup if that frame is absent from the model
+
+#### Scenario: XArm7 task owns single-target state
+- **WHEN** the XArm7 Pink IK task receives right-controller teleop deltas
+- **THEN** the XArm7 task SHALL maintain the single target pose and captured baseline needed for its one configured end-effector without forcing that target shape on the shared Pink base
 
 #### Scenario: XArm7 task owns only XArm7 resources
 - **WHEN** the coordinator asks the XArm7 Pink IK task for its resource claim

@@ -249,7 +249,8 @@
         <h2>Hierarchical task design</h2>
         <p><span class="tag">BasePinkIKTask</span><span class="tag">XArm7IKTask</span><span class="tag">future subclasses</span></p>
         <ul>
-          <li><strong>BasePinkIKTask</strong> owns shared solver setup, current-joint extraction, target state, timeout handling, joint-delta safety, and output generation.</li>
+          <li><strong>BasePinkIKTask</strong> owns shared solver setup, current-joint extraction, target-update hooks, joint-delta safety, and output generation.</li>
+          <li><strong>SingleFramePinkIKTask</strong> owns single end-effector target state, timeout handling, and baseline capture.</li>
           <li><strong>XArm7IKTask</strong> owns XArm7 model loading, end-effector frame task construction, right-controller target updates, and XArm7 resource claims.</li>
           <li><strong>Future subclasses</strong> can add XArm6, Piper, or dual-arm combined-model construction without overloading the first task.</li>
         </ul>

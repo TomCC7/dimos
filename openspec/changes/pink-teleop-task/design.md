@@ -32,7 +32,7 @@ The design must preserve the current passive control-task contract: tasks do not
 Create an abstract/shared base task, tentatively `BasePinkIKTask`, for behavior that is common across Pink-backed teleop IK tasks:
 
 - implement the `BaseControlTask` lifecycle and passive `compute(state)` contract
-- manage thread-safe controller pose state, active/inactive state, last update time, and captured end-effector baselines
+- expose reusable hooks so concrete tasks can manage target state without forcing the shared base to assume a single end-effector target
 - read current joint positions from `CoordinatorState` in configured joint order
 - build/update Pink `Configuration` from current joints
 - run `pink.solve_ik()` with configured solver settings
@@ -93,9 +93,9 @@ This keeps the XArm7 wire format stable while reserving an explicit route-key mo
 
 Alternative considered: encode `target_id` directly in `frame_id` by parsing strings without coordinator configuration. That is less explicit and makes blueprint contracts harder to validate.
 
-### 6. Track active state, baseline, and staleness in the base class
+### 6. Keep target-shape policy out of the base class
 
-For the XArm7 milestone, the base class manages one target state for the right controller:
+For the XArm7 milestone, `XArm7IKTask` manages one target state for the right controller:
 
 - latest controller delta pose
 - last update time
@@ -103,7 +103,9 @@ For the XArm7 milestone, the base class manages one target state for the right c
 - captured initial end-effector pose
 - previous primary-button state if needed for edge detection
 
-If the right-controller target times out, the XArm7 task is deactivated and its captured baseline is cleared. Future multi-target subclasses can reuse the same state container per target so one stale target does not necessarily stop the entire task. To avoid unconstrained joint drift, concrete tasks may include a low-cost posture/hold objective over controlled joints, initialized from the current joint state.
+The shared Pink base should not encode `frame_tasks[0]`, a single `_target_pose`, or a single captured end-effector baseline as its default behavior. Those assumptions belong in a single-target concrete task or a small single-frame intermediate class. The base should own Pink solver plumbing and expose hooks for concrete tasks to update one or more Pink frame targets before solving.
+
+If the right-controller target times out, the XArm7 task is deactivated and its captured baseline is cleared. Future multi-target subclasses can reuse the same target-state container per target so one stale target does not necessarily stop the entire task. To avoid unconstrained joint drift, concrete tasks may include a low-cost posture/hold objective over controlled joints, initialized from the current joint state.
 
 Alternative considered: deactivate the whole dual-arm task when either hand times out. That is safer in the narrow sense, but it makes one dropped controller stream interrupt the other arm and weakens single-hand operation during dual-arm sessions.
 
@@ -135,8 +137,8 @@ Alternative considered: vendor Pink-like logic into the existing `PinocchioIK` h
 ## Migration Plan
 
 1. Add Pink dependency and any required mypy ignore/typing configuration for Pink modules.
-2. Add `BasePinkIKTask` shared infrastructure for model loading, Pink configuration updates, solver invocation, target state, safety checks, and `JointCommandOutput` generation.
-3. Add `XArm7IKTask` as the first concrete subclass with XArm7-specific frame-task construction and right-controller-only target updates.
+2. Add `BasePinkIKTask` shared infrastructure for model loading, Pink configuration updates, solver invocation, target-update hooks, safety checks, and `JointCommandOutput` generation.
+3. Add a single-frame Pink teleop layer and `XArm7IKTask` as the first concrete subclass with XArm7-specific frame-task construction and right-controller-only target state.
 4. Register an XArm7 Pink task type in `ControlCoordinator` and update XArm7 teleop blueprints to route the right controller to that task.
 5. Validate manually through `teleop-quest-xarm7` before changing XArm6, Piper, or dual-arm blueprints.
 6. Design later XArm6, Piper, and dual-arm subclasses using what the XArm7 implementation proves about the base class.
