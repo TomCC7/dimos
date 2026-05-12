@@ -8,10 +8,11 @@
 
 - [x] 2.1 Define a shared Pink IK task config for common solver settings, controlled joint names, model path, timeout, max joint delta, priority, and optional gripper settings.
 - [x] 2.2 Implement `BasePinkIKTask` with the `BaseControlTask` lifecycle, `name`, `claim`, `is_active`, `start`, `stop`, and preemption behavior.
-- [x] 2.3 Implement thread-safe right-controller target state management, including latest pose, active flag, last update time, and captured end-effector baseline.
+- [x] 2.3 Implement thread-safe right-controller target state management in the XArm7 single-frame task layer, including latest pose, active flag, last update time, and captured end-effector baseline.
 - [x] 2.4 Implement current joint extraction from `CoordinatorState` in configured joint order and return no command when any required joint state is missing.
 - [x] 2.5 Implement Pink configuration update, solver invocation, velocity integration over `state.dt`, joint delta safety checks, and `JointCommandOutput` generation.
 - [x] 2.6 Add base-class hooks for robot-specific Pink frame task construction, target update, model validation, and optional posture/hold objectives.
+- [x] 2.7 Refactor `BasePinkIKTask` so shared solver plumbing does not assume a single end-effector target: move `_target_pose`, `_initial_ee_pose`, `_primary_frame_name()`, and `frame_tasks[0]` target updates into `XArm7IKTask` or a single-frame intermediate class, while preserving XArm7 single-frame behavior.
 
 ## 3. XArm7 Pink IK Task
 
@@ -31,7 +32,7 @@
 
 ## 5. Tests and Validation
 
-- [x] 5.1 Add unit tests for `BasePinkIKTask` missing joint state, timeout, inactive state, and unsafe joint-delta rejection behavior.
+- [x] 5.1 Add unit tests for Pink IK missing joint state, single-frame timeout/inactive state, and unsafe joint-delta rejection behavior.
 - [x] 5.2 Add unit tests for XArm7 task construction validating model load, joint-name compatibility, and missing end-effector frame failure.
 - [x] 5.3 Add tests showing right-controller `PoseStamped` updates XArm7 target state while left-controller data is not required.
 - [x] 5.4 Add coordinator/blueprint coverage proving `coordinator_teleop_xarm7` creates the XArm7 Pink IK task and preserves `teleop_xarm` routing.

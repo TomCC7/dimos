@@ -22,7 +22,12 @@ import pytest
 from dimos.control.coordinator import ControlCoordinator, ControlCoordinatorConfig, TaskConfig
 from dimos.control.task import ControlMode, CoordinatorState, JointStateSnapshot
 from dimos.control.tasks import pink_teleop_task
-from dimos.control.tasks.pink_teleop_task import XArm7IKTask, XArm7IKTaskConfig
+from dimos.control.tasks.pink_teleop_task import (
+    BasePinkIKTask,
+    SingleFramePinkIKTask,
+    XArm7IKTask,
+    XArm7IKTaskConfig,
+)
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.robot.catalog.ufactory import XARM7_FK_MODEL
 
@@ -73,10 +78,30 @@ def test_timeout_clears_active_target_state() -> None:
     assert not task.is_active()
 
 
+def test_timeout_clears_active_target_state_before_joint_extraction() -> None:
+    task = _task(timeout=0.1)
+    task.on_cartesian_command(PoseStamped(frame_id="teleop_xarm"), t_now=1.0)
+    state = CoordinatorState(
+        joints=JointStateSnapshot(joint_positions={name: 0.0 for name in XARM7_JOINTS[:-1]}),
+        t_now=1.2,
+        dt=0.01,
+    )
+
+    assert task.compute(state) is None
+    assert not task.is_active()
+
+
 def test_inactive_state_returns_no_command() -> None:
     task = _task()
 
     assert task.compute(_state()) is None
+
+
+def test_single_target_state_lives_in_single_frame_layer() -> None:
+    assert issubclass(XArm7IKTask, SingleFramePinkIKTask)
+    assert not hasattr(BasePinkIKTask, "_get_live_target")
+    assert not hasattr(BasePinkIKTask, "_single_frame_task")
+    assert not hasattr(BasePinkIKTask, "_primary_frame_name")
 
 
 def test_unsafe_joint_delta_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
