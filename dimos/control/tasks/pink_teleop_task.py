@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import threading
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import pink
@@ -125,13 +125,8 @@ class BasePinkIKTask(BaseControlTask):
         self._pink_tasks = [*self._frame_tasks, *self._create_extra_tasks()]
 
         self._lock = threading.Lock()
-        self._target_pose: Pose | PoseStamped | None = None
-        self._last_update_time = 0.0
         self._active = False
-        self._initial_ee_pose: pinocchio.SE3 | None = None
-        self._prev_primary = False
         self._gripper_target = config.gripper_open_pos
-        self._logged_first_target = False
         self._logged_first_output = False
 
     @property
@@ -149,9 +144,9 @@ class BasePinkIKTask(BaseControlTask):
         )
 
     def is_active(self) -> bool:
-        """Return true when a live controller target can produce IK output."""
+        """Return true when this task should be considered for compute."""
         with self._lock:
-            return self._active and self._target_pose is not None
+            return self._active
 
     def start(self) -> None:
         """Activate the task so incoming targets can be consumed."""
@@ -163,14 +158,12 @@ class BasePinkIKTask(BaseControlTask):
         """Deactivate the task and clear captured target state."""
         with self._lock:
             self._active = False
-            self._target_pose = None
-            self._initial_ee_pose = None
+            self._clear_target_state()
         logger.info(f"{type(self).__name__} {self._name} stopped")
 
     def compute(self, state: CoordinatorState) -> JointCommandOutput | None:
         """Run one Pink differential IK tick and return joint positions."""
-        raw_pose = self._get_live_target(state.t_now)
-        if raw_pose is None:
+        if not self._prepare_compute(state):
             return None
 
         q_current = self._get_current_joints(state)
@@ -181,20 +174,8 @@ class BasePinkIKTask(BaseControlTask):
             return None
 
         self._configuration.update(q_current)
-        if not self._ensure_initial_ee_pose(q_current):
+        if not self._update_frame_targets(state, q_current):
             return None
-
-        with self._lock:
-            initial_ee_pose = self._initial_ee_pose
-        if initial_ee_pose is None:
-            return None
-
-        delta_se3 = pose_to_se3(raw_pose)
-        target_pose = pinocchio.SE3(
-            delta_se3.rotation @ initial_ee_pose.rotation,
-            initial_ee_pose.translation + delta_se3.translation,
-        )
-        self._update_frame_targets(target_pose)
 
         dt = max(state.dt, 1e-9)
         try:
@@ -238,6 +219,79 @@ class BasePinkIKTask(BaseControlTask):
             mode=ControlMode.SERVO_POSITION,
         )
 
+    def on_gripper_trigger(self, value: float, _t_now: float = 0.0) -> bool:
+        """Map analog trigger value to configured gripper position."""
+        if not self._config.gripper_joint:
+            return False
+        clamped = max(0.0, min(1.0, value))
+        position = (
+            self._config.gripper_open_pos
+            + (self._config.gripper_closed_pos - self._config.gripper_open_pos) * clamped
+        )
+        with self._lock:
+            self._gripper_target = position
+        return True
+
+    def on_preempted(self, by_task: str, joints: frozenset[str]) -> None:
+        """Clear active target state when a higher-priority task preempts us."""
+        if joints & self.claim().joints:
+            logger.warning(
+                f"{type(self).__name__} {self._name} preempted by {by_task} on joints {joints}"
+            )
+            with self._lock:
+                self._active = False
+                self._clear_target_state()
+
+    def _get_current_joints(self, state: CoordinatorState) -> NDArray[np.floating[Any]] | None:
+        positions = []
+        for joint_name in self._joint_names_list:
+            position = state.joints.get_position(joint_name)
+            if position is None:
+                return None
+            positions.append(position)
+        return np.array(positions, dtype=float)
+
+    def _validate_model(self) -> None:
+        if self._model.nq != len(self._joint_names_list):
+            raise ValueError(
+                f"{type(self).__name__} '{self._name}' model DOF ({self._model.nq}) "
+                f"does not match joint count ({len(self._joint_names_list)})"
+            )
+
+    def _create_frame_tasks(self) -> list[FrameTask]:
+        raise NotImplementedError
+
+    def _create_extra_tasks(self) -> list[Any]:
+        return []
+
+    def _clear_target_state(self) -> None:
+        """Clear concrete target state while holding ``self._lock``."""
+
+    def _prepare_compute(self, _state: CoordinatorState) -> bool:
+        return True
+
+    def _update_frame_targets(
+        self, state: CoordinatorState, q_current: NDArray[np.floating[Any]]
+    ) -> bool:
+        raise NotImplementedError
+
+
+class SingleFramePinkIKTask(BasePinkIKTask):
+    """Pink teleop IK base for concrete tasks with one controlled frame target."""
+
+    def __init__(self, name: str, config: PinkIKTaskConfig) -> None:
+        super().__init__(name, config)
+        self._target_pose: Pose | PoseStamped | None = None
+        self._last_update_time = 0.0
+        self._initial_ee_pose: pinocchio.SE3 | None = None
+        self._prev_primary = False
+        self._logged_first_target = False
+
+    def is_active(self) -> bool:
+        """Return true when a live single-frame target can produce IK output."""
+        with self._lock:
+            return self._active and self._target_pose is not None
+
     def on_cartesian_command(self, pose: Pose | PoseStamped, t_now: float) -> bool:
         """Store the latest robot-frame controller delta pose."""
         with self._lock:
@@ -261,9 +315,8 @@ class BasePinkIKTask(BaseControlTask):
         elif not primary and self._prev_primary:
             logger.info(f"{type(self).__name__} {self._name}: disengage")
             with self._lock:
-                self._target_pose = None
-                self._initial_ee_pose = None
                 self._active = False
+                self._clear_target_state()
         self._prev_primary = primary
 
         if self._config.gripper_joint:
@@ -271,29 +324,30 @@ class BasePinkIKTask(BaseControlTask):
             self.on_gripper_trigger(trigger)
         return True
 
-    def on_gripper_trigger(self, value: float, _t_now: float = 0.0) -> bool:
-        """Map analog trigger value to configured gripper position."""
-        if not self._config.gripper_joint:
-            return False
-        clamped = max(0.0, min(1.0, value))
-        position = (
-            self._config.gripper_open_pos
-            + (self._config.gripper_closed_pos - self._config.gripper_open_pos) * clamped
-        )
-        with self._lock:
-            self._gripper_target = position
-        return True
+    def _prepare_compute(self, state: CoordinatorState) -> bool:
+        return self._get_live_target(state.t_now) is not None
 
-    def on_preempted(self, by_task: str, joints: frozenset[str]) -> None:
-        """Clear active target state when a higher-priority task preempts us."""
-        if joints & self.claim().joints:
-            logger.warning(
-                f"{type(self).__name__} {self._name} preempted by {by_task} on joints {joints}"
-            )
-            with self._lock:
-                self._target_pose = None
-                self._initial_ee_pose = None
-                self._active = False
+    def _update_frame_targets(
+        self, state: CoordinatorState, q_current: NDArray[np.floating[Any]]
+    ) -> bool:
+        raw_pose = self._get_live_target(state.t_now)
+        if raw_pose is None:
+            return False
+        if not self._ensure_initial_ee_pose(q_current):
+            return False
+
+        with self._lock:
+            initial_ee_pose = self._initial_ee_pose
+        if initial_ee_pose is None:
+            return False
+
+        delta_se3 = pose_to_se3(raw_pose)
+        target_pose = pinocchio.SE3(
+            delta_se3.rotation @ initial_ee_pose.rotation,
+            initial_ee_pose.translation + delta_se3.translation,
+        )
+        self._single_frame_task().set_target(target_pose)
+        return True
 
     def _get_live_target(self, t_now: float) -> Pose | PoseStamped | None:
         with self._lock:
@@ -306,20 +360,10 @@ class BasePinkIKTask(BaseControlTask):
                         f"{type(self).__name__} {self._name} timed out "
                         f"(no update for {time_since_update:.3f}s)"
                     )
-                    self._target_pose = None
-                    self._initial_ee_pose = None
                     self._active = False
+                    self._clear_target_state()
                     return None
             return self._target_pose
-
-    def _get_current_joints(self, state: CoordinatorState) -> NDArray[np.floating[Any]] | None:
-        positions = []
-        for joint_name in self._joint_names_list:
-            position = state.joints.get_position(joint_name)
-            if position is None:
-                return None
-            positions.append(position)
-        return np.array(positions, dtype=float)
 
     def _ensure_initial_ee_pose(self, q_current: NDArray[np.floating[Any]]) -> bool:
         with self._lock:
@@ -331,28 +375,21 @@ class BasePinkIKTask(BaseControlTask):
         return True
 
     def _capture_end_effector_pose(self, _q_current: NDArray[np.floating[Any]]) -> pinocchio.SE3:
-        return self._configuration.get_transform_frame_to_world(self._primary_frame_name()).copy()
+        return self._configuration.get_transform_frame_to_world(self._single_frame_name()).copy()
 
-    def _primary_frame_name(self) -> str:
-        if not self._frame_tasks:
-            raise RuntimeError(f"{type(self).__name__} {self._name} has no frame tasks")
-        return cast("str", self._frame_tasks[0].frame)
+    def _single_frame_name(self) -> str:
+        return str(self._single_frame_task().frame)
 
-    def _validate_model(self) -> None:
-        if self._model.nq != len(self._joint_names_list):
-            raise ValueError(
-                f"{type(self).__name__} '{self._name}' model DOF ({self._model.nq}) "
-                f"does not match joint count ({len(self._joint_names_list)})"
+    def _single_frame_task(self) -> FrameTask:
+        if len(self._frame_tasks) != 1:
+            raise RuntimeError(
+                f"{type(self).__name__} {self._name} requires exactly one frame task"
             )
+        return self._frame_tasks[0]
 
-    def _create_frame_tasks(self) -> list[FrameTask]:
-        raise NotImplementedError
-
-    def _create_extra_tasks(self) -> list[Any]:
-        return []
-
-    def _update_frame_targets(self, target_pose: pinocchio.SE3) -> None:
-        self._frame_tasks[0].set_target(target_pose)
+    def _clear_target_state(self) -> None:
+        self._target_pose = None
+        self._initial_ee_pose = None
 
 
 @dataclass
@@ -364,7 +401,7 @@ class XArm7IKTaskConfig(PinkIKTaskConfig):
     hand: Literal["left", "right"] | None = "right"
 
 
-class XArm7IKTask(BasePinkIKTask):
+class XArm7IKTask(SingleFramePinkIKTask):
     """Pink teleop IK task for the existing right-controller XArm7 route."""
 
     _config: XArm7IKTaskConfig
@@ -401,6 +438,7 @@ class XArm7IKTask(BasePinkIKTask):
 __all__ = [
     "BasePinkIKTask",
     "PinkIKTaskConfig",
+    "SingleFramePinkIKTask",
     "XArm7IKTask",
     "XArm7IKTaskConfig",
 ]
