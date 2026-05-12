@@ -54,6 +54,7 @@ class RerunUrdfRobotVisualizerConfig(ModuleConfig):
     desired_controller_entity_path: str = "world/debug/desired_controller"
     desired_target_entity_path: str = "world/debug/desired_target"
     end_effector_entity_path: str = "world/debug/end_effector"
+    debug_pose_axis_length: float = 0.15
     end_effector_frame: str = ""
     connect_url: str | None = None
     memory_limit: str = "25%"
@@ -215,9 +216,10 @@ class RerunUrdfRobotVisualizer(Module):
             entity_path,
             rr.Transform3D(translation=translation, quaternion=rr.Quaternion(xyzw=quaternion)),
         )
+        rr.log(entity_path, rr.TransformAxes3D(self.config.debug_pose_axis_length))
         rr.log(
             f"{entity_path}/marker",
-            rr.Points3D([translation], radii=[0.025], colors=[color], labels=[entity_path.rsplit('/', 1)[-1]]),
+            rr.Points3D([[0.0, 0.0, 0.0]], radii=[0.025], colors=[color], labels=[entity_path.rsplit('/', 1)[-1]]),
         )
 
     @property

@@ -29,6 +29,7 @@ from dimos.robot.catalog.ufactory import XARM7_FK_MODEL
 from dimos.visualization.rerun import urdf_robot
 from dimos.visualization.rerun.urdf_robot import (
     RerunUrdfRobotVisualizer,
+    RerunUrdfRobotVisualizerConfig,
     _resolve_package_uris,
     normalize_joint_name,
 )
@@ -107,6 +108,7 @@ def test_debug_pose_logging_uses_distinct_transform_and_marker_entities(
     monkeypatch.setattr(rr, "log", lambda path, archetype: logged.append((path, archetype)))
 
     module = RerunUrdfRobotVisualizer.__new__(RerunUrdfRobotVisualizer)
+    module.config = RerunUrdfRobotVisualizerConfig(urdf_path=XARM7_FK_MODEL)
     module.log_pose(
         PoseStamped(position=[1.0, 2.0, 3.0], orientation=[0.0, 0.0, 0.0, 1.0]),
         "world/debug/desired_controller",
@@ -115,5 +117,7 @@ def test_debug_pose_logging_uses_distinct_transform_and_marker_entities(
 
     assert [path for path, _ in logged] == [
         "world/debug/desired_controller",
+        "world/debug/desired_controller",
         "world/debug/desired_controller/marker",
     ]
+    assert logged[2][1].positions.as_arrow_array().to_pylist() == [[0.0, 0.0, 0.0]]
