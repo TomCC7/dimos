@@ -25,11 +25,15 @@ from dimos.control.blueprints.teleop import (
     coordinator_teleop_xarm6,
     coordinator_teleop_xarm7,
 )
+from dimos.control.pink_ik_visualization import XArm7PinkIkDesiredState
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.transport import LCMTransport
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from dimos.msgs.sensor_msgs.JointState import JointState
+from dimos.robot.catalog.ufactory import XARM7_FK_MODEL
 from dimos.teleop.quest.quest_extensions import ArmTeleopModule
 from dimos.teleop.quest.quest_types import Buttons
+from dimos.visualization.rerun.urdf_robot import RerunUrdfRobotVisualizer
 from dimos.visualization.vis_module import vis_module
 
 # Arm teleop with press-and-hold engage (has rerun viz)
@@ -55,6 +59,38 @@ teleop_quest_xarm7 = autoconnect(
             "/coordinator/cartesian_command", PoseStamped
         ),
         ("buttons", Buttons): LCMTransport("/teleop/buttons", Buttons),
+    }
+)
+
+
+# XArm7 teleop Rerun debug path: right controller -> Pink IK desired joints -> URDF robot.
+teleop_quest_xarm7_rerun = autoconnect(
+    ArmTeleopModule.blueprint(task_names={"right": "teleop_xarm"}),
+    XArm7PinkIkDesiredState.blueprint(),
+    RerunUrdfRobotVisualizer.blueprint(
+        urdf_path=XARM7_FK_MODEL,
+        entity_path_prefix="world/xarm7_desired",
+        end_effector_frame="link7",
+        desired_controller_entity_path="world/debug/xarm7/desired_controller",
+        desired_target_entity_path="world/debug/xarm7/desired_target",
+        end_effector_entity_path="world/debug/xarm7/desired_end_effector",
+    ),
+    vis_module("rerun"),
+).transports(
+    {
+        ("right_controller_output", PoseStamped): LCMTransport(
+            "/coordinator/cartesian_command", PoseStamped
+        ),
+        ("cartesian_command", PoseStamped): LCMTransport(
+            "/coordinator/cartesian_command", PoseStamped
+        ),
+        ("buttons", Buttons): LCMTransport("/teleop/buttons", Buttons),
+        ("desired_joint_state", JointState): LCMTransport(
+            "/teleop/xarm7/desired_joint_state", JointState
+        ),
+        ("joint_state", JointState): LCMTransport(
+            "/teleop/xarm7/desired_joint_state", JointState
+        ),
     }
 )
 

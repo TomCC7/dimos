@@ -72,6 +72,7 @@ all_blueprints = {
     "teleop-quest-rerun": "dimos.teleop.quest.blueprints:teleop_quest_rerun",
     "teleop-quest-xarm6": "dimos.teleop.quest.blueprints:teleop_quest_xarm6",
     "teleop-quest-xarm7": "dimos.teleop.quest.blueprints:teleop_quest_xarm7",
+    "teleop-quest-xarm7-rerun": "dimos.teleop.quest.blueprints:teleop_quest_xarm7_rerun",
     "uintree-g1-primitive-no-nav": "dimos.robot.unitree.g1.blueprints.primitive.uintree_g1_primitive_no_nav:uintree_g1_primitive_no_nav",
     "unitree-g1": "dimos.robot.unitree.g1.blueprints.perceptive.unitree_g1:unitree_g1",
     "unitree-g1-agentic": "dimos.robot.unitree.g1.blueprints.agentic.unitree_g1_agentic:unitree_g1_agentic",
@@ -186,6 +187,7 @@ all_modules = {
     "reid-module": "dimos.perception.detection.reid.module.ReidModule",
     "replanning-a-star-planner": "dimos.navigation.replanning_a_star.module.ReplanningAStarPlanner",
     "rerun-bridge-module": "dimos.visualization.rerun.bridge.RerunBridgeModule",
+    "rerun-urdf-robot-visualizer": "dimos.visualization.rerun.urdf_robot.RerunUrdfRobotVisualizer",
     "rerun-web-socket-server": "dimos.visualization.rerun.websocket_server.RerunWebSocketServer",
     "security-module": "dimos.experimental.security_demo.security_module.SecurityModule",
     "semantic-search": "dimos.memory2.module.SemanticSearch",
@@ -207,5 +209,6 @@ all_modules = {
     "wavefront-frontier-explorer": "dimos.navigation.frontier_exploration.wavefront_frontier_goal_selector.WavefrontFrontierExplorer",
     "web-input": "dimos.agents.web_human_input.WebInput",
     "websocket-vis-module": "dimos.web.websocket_vis.websocket_vis_module.WebsocketVisModule",
+    "x-arm7-pink-ik-desired-state": "dimos.control.pink_ik_visualization.XArm7PinkIkDesiredState",
     "zed-camera": "dimos.hardware.sensors.camera.zed.camera.ZEDCamera",
 }
