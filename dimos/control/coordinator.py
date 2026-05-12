@@ -68,6 +68,9 @@ if TYPE_CHECKING:
 
 logger = setup_logger()
 
+CARTESIAN_TARGET_TASK_TYPES = ("cartesian_ik", "teleop_ik", "xarm7_pink_ik")
+TELEOP_BUTTON_TASK_TYPES = ("teleop_ik", "xarm7_pink_ik")
+
 
 @dataclass
 class TaskConfig:
@@ -75,7 +78,7 @@ class TaskConfig:
 
     Attributes:
         name: Task name (e.g., "traj_arm")
-        type: Task type ("trajectory", "servo", "velocity", "cartesian_ik", "teleop_ik")
+        type: Task type ("trajectory", "servo", "velocity", "cartesian_ik", "teleop_ik", "xarm7_pink_ik")
         joint_names: List of joint names this task controls
         priority: Task priority (higher wins arbitration)
         model_path: Path to URDF/MJCF for IK solver (cartesian_ik/teleop_ik only)
@@ -98,6 +101,16 @@ class TaskConfig:
     gripper_joint: str | None = None
     gripper_open_pos: float = 0.0
     gripper_closed_pos: float = 0.0
+    # Pink IK specific
+    pink_solver: str | None = None
+    pink_damping: float = 1e-12
+    pink_end_effector_frame: str = ""
+    pink_position_cost: float = 1.0
+    pink_orientation_cost: float = 1.0
+    pink_lm_damping: float = 1.0
+    pink_gain: float = 1.0
+    max_joint_delta_deg: float = 5.0
+    timeout: float = 0.5
 
 
 class ControlCoordinatorConfig(ModuleConfig):
@@ -359,6 +372,37 @@ class ControlCoordinator(Module):
                 ),
             )
 
+        elif task_type == "xarm7_pink_ik":
+            from dimos.control.tasks.pink_teleop_task import XArm7IKTask, XArm7IKTaskConfig
+
+            model_path = cfg.model_path
+            if model_path is None:
+                from dimos.robot.catalog.ufactory import XARM7_FK_MODEL
+
+                model_path = XARM7_FK_MODEL
+
+            return XArm7IKTask(
+                cfg.name,
+                XArm7IKTaskConfig(
+                    joint_names=cfg.joint_names,
+                    model_path=model_path,
+                    priority=cfg.priority,
+                    timeout=cfg.timeout,
+                    max_joint_delta_deg=cfg.max_joint_delta_deg,
+                    hand=cfg.hand,
+                    solver=cfg.pink_solver,
+                    damping=cfg.pink_damping,
+                    end_effector_frame=cfg.pink_end_effector_frame or "link7",
+                    position_cost=cfg.pink_position_cost,
+                    orientation_cost=cfg.pink_orientation_cost,
+                    lm_damping=cfg.pink_lm_damping,
+                    gain=cfg.pink_gain,
+                    gripper_joint=cfg.gripper_joint,
+                    gripper_open_pos=cfg.gripper_open_pos,
+                    gripper_closed_pos=cfg.gripper_closed_pos,
+                ),
+            )
+
         else:
             raise ValueError(f"Unknown task type: {task_type}")
 
@@ -565,6 +609,7 @@ class ControlCoordinator(Module):
                 return
 
             task.on_cartesian_command(msg, t_now)
+            logger.debug(f"Routed cartesian command to task: {task_name}")
 
     def _on_twist_command(self, msg: Twist) -> None:
         """Convert Twist → virtual joint velocities and route via _on_joint_command.
@@ -697,17 +742,16 @@ class ControlCoordinator(Module):
                     "Use task_invoke RPC or set transport via blueprint."
                 )
 
-        # Subscribe to cartesian commands if any cartesian_ik tasks configured
-        has_cartesian_ik = any(t.type in ("cartesian_ik", "teleop_ik") for t in self.config.tasks)
-        if has_cartesian_ik:
+        # Subscribe to cartesian commands if any cartesian target tasks configured
+        if self._has_cartesian_target_task():
             try:
                 self._cartesian_command_unsub = self.cartesian_command.subscribe(
                     self._on_cartesian_command
                 )
-                logger.info("Subscribed to cartesian_command for CartesianIK/TeleopIK tasks")
+                logger.info("Subscribed to cartesian_command for cartesian target tasks")
             except Exception:
                 logger.warning(
-                    "CartesianIK/TeleopIK tasks configured but could not subscribe to cartesian_command. "
+                    "Cartesian target tasks configured but could not subscribe to cartesian_command. "
                     "Use task_invoke RPC or set transport via blueprint."
                 )
 
@@ -723,13 +767,18 @@ class ControlCoordinator(Module):
                     "Use task_invoke RPC or set transport via blueprint."
                 )
 
-        # Subscribe to buttons if any teleop_ik tasks configured (engage/disengage)
-        has_teleop_ik = any(t.type == "teleop_ik" for t in self.config.tasks)
-        if has_teleop_ik:
+        # Subscribe to buttons if any teleop tasks configured (engage/disengage)
+        if self._has_teleop_task():
             self._buttons_unsub = self.buttons.subscribe(self._on_buttons)
             logger.info("Subscribed to buttons for engage/disengage")
 
         logger.info(f"ControlCoordinator started at {self.config.tick_rate}Hz")
+
+    def _has_cartesian_target_task(self) -> bool:
+        return any(t.type in CARTESIAN_TARGET_TASK_TYPES for t in self.config.tasks)
+
+    def _has_teleop_task(self) -> bool:
+        return any(t.type in TELEOP_BUTTON_TASK_TYPES for t in self.config.tasks)
 
     @rpc
     def stop(self) -> None:

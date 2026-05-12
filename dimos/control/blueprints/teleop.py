@@ -171,10 +171,10 @@ coordinator_teleop_xarm7 = autoconnect(
         hardware=[_xarm7_teleop_cfg.to_hardware_component()],
         tasks=[
             _xarm7_teleop_cfg.to_task_config(
-                task_type="teleop_ik",
+                task_type="xarm7_pink_ik",
                 task_name="teleop_xarm",
                 model_path=XARM7_FK_MODEL,
-                ee_joint_id=_xarm7_teleop_cfg.dof,
+                pink_end_effector_frame="link7",
                 hand="right",
                 gripper_joint=make_gripper_joints("arm")[0],
                 gripper_open_pos=0.85,
