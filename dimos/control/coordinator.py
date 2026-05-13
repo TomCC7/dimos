@@ -68,8 +68,13 @@ if TYPE_CHECKING:
 
 logger = setup_logger()
 
-CARTESIAN_TARGET_TASK_TYPES = ("cartesian_ik", "teleop_ik", "xarm7_pink_ik")
-TELEOP_BUTTON_TASK_TYPES = ("teleop_ik", "xarm7_pink_ik")
+CARTESIAN_TARGET_TASK_TYPES = (
+    "cartesian_ik",
+    "teleop_ik",
+    "xarm7_pink_ik",
+    "openarm_bimanual_pink_ik",
+)
+TELEOP_BUTTON_TASK_TYPES = ("teleop_ik", "xarm7_pink_ik", "openarm_bimanual_pink_ik")
 
 
 @dataclass
@@ -104,11 +109,23 @@ class TaskConfig:
     # Pink IK specific
     pink_solver: str | None = None
     pink_damping: float = 1e-12
+    pink_num_solver_iterations: int = 1
+    pink_amplify_factor: float = 1.0
     pink_end_effector_frame: str = ""
+    pink_left_end_effector_frame: str = ""
+    pink_right_end_effector_frame: str = ""
+    pink_left_task_name: str = "teleop_openarm_left"
+    pink_right_task_name: str = "teleop_openarm_right"
     pink_position_cost: float = 1.0
     pink_orientation_cost: float = 1.0
     pink_lm_damping: float = 1.0
     pink_gain: float = 1.0
+    pink_posture_cost: float = 0.0
+    pink_posture_default_weight: float = 1.0
+    pink_posture_joint_weights: dict[str, float] = field(default_factory=dict)
+    pink_posture_reference: dict[str, float] = field(default_factory=dict)
+    pink_posture_lm_damping: float = 0.0
+    pink_posture_gain: float = 1.0
     max_joint_delta_deg: float = 5.0
     timeout: float = 0.5
 
@@ -392,14 +409,63 @@ class ControlCoordinator(Module):
                     hand=cfg.hand,
                     solver=cfg.pink_solver,
                     damping=cfg.pink_damping,
+                    num_solver_iterations=cfg.pink_num_solver_iterations,
+                    amplify_factor=cfg.pink_amplify_factor,
                     end_effector_frame=cfg.pink_end_effector_frame or "link7",
                     position_cost=cfg.pink_position_cost,
                     orientation_cost=cfg.pink_orientation_cost,
                     lm_damping=cfg.pink_lm_damping,
                     gain=cfg.pink_gain,
+                    posture_cost=cfg.pink_posture_cost,
+                    posture_default_weight=cfg.pink_posture_default_weight,
+                    posture_joint_weights=cfg.pink_posture_joint_weights,
+                    posture_reference=cfg.pink_posture_reference,
+                    posture_lm_damping=cfg.pink_posture_lm_damping,
+                    posture_gain=cfg.pink_posture_gain,
                     gripper_joint=cfg.gripper_joint,
                     gripper_open_pos=cfg.gripper_open_pos,
                     gripper_closed_pos=cfg.gripper_closed_pos,
+                ),
+            )
+
+        elif task_type == "openarm_bimanual_pink_ik":
+            from dimos.control.tasks.pink_teleop_task import (
+                OpenArmBimanualIKTask,
+                OpenArmBimanualIKTaskConfig,
+            )
+
+            model_path = cfg.model_path
+            if model_path is None:
+                from dimos.robot.catalog.openarm import OPENARM_V10_BIMANUAL_FK_MODEL
+
+                model_path = OPENARM_V10_BIMANUAL_FK_MODEL
+
+            task_config_kwargs: dict[str, Any] = {}
+            if cfg.joint_names:
+                task_config_kwargs["joint_names"] = cfg.joint_names
+
+            return OpenArmBimanualIKTask(
+                cfg.name,
+                OpenArmBimanualIKTaskConfig(
+                    model_path=model_path,
+                    priority=cfg.priority,
+                    timeout=cfg.timeout,
+                    max_joint_delta_deg=cfg.max_joint_delta_deg,
+                    solver=cfg.pink_solver,
+                    damping=cfg.pink_damping,
+                    num_solver_iterations=cfg.pink_num_solver_iterations,
+                    amplify_factor=cfg.pink_amplify_factor,
+                    left_task_name=cfg.pink_left_task_name,
+                    right_task_name=cfg.pink_right_task_name,
+                    left_end_effector_frame=cfg.pink_left_end_effector_frame
+                    or "openarm_left_link7",
+                    right_end_effector_frame=cfg.pink_right_end_effector_frame
+                    or "openarm_right_link7",
+                    position_cost=cfg.pink_position_cost,
+                    orientation_cost=cfg.pink_orientation_cost,
+                    lm_damping=cfg.pink_lm_damping,
+                    gain=cfg.pink_gain,
+                    **task_config_kwargs,
                 ),
             )
 
@@ -604,12 +670,18 @@ class ControlCoordinator(Module):
 
         with self._task_lock:
             task = self._tasks.get(task_name)
-            if task is None:
-                logger.warning(f"Cartesian command for unknown task: {task_name}")
+            if task is not None:
+                task.on_cartesian_command(msg, t_now)
+                logger.debug(f"Routed cartesian command to task: {task_name}")
                 return
 
-            task.on_cartesian_command(msg, t_now)
-            logger.debug(f"Routed cartesian command to task: {task_name}")
+            for task in self._tasks.values():
+                target_names = getattr(task, "target_task_names", ())
+                if task_name in target_names and task.on_cartesian_command(msg, t_now):
+                    logger.debug(f"Routed cartesian command to task target: {task_name}")
+                    return
+
+            logger.warning(f"Cartesian command for unknown task: {task_name}")
 
     def _on_twist_command(self, msg: Twist) -> None:
         """Convert Twist → virtual joint velocities and route via _on_joint_command.

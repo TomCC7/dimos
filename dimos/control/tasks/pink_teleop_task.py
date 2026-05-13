@@ -20,7 +20,7 @@ to solve differential IK from Quest controller pose deltas.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import threading
 from typing import TYPE_CHECKING, Any, Literal
@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 import pink
 from pink import solve_ik
-from pink.tasks import FrameTask
+from pink.tasks import FrameTask, PostureTask as PinkPostureTask
 import pinocchio
 import qpsolvers
 
@@ -40,6 +40,8 @@ from dimos.control.task import (
     ResourceClaim,
 )
 from dimos.manipulation.planning.kinematics.pinocchio_ik import check_joint_delta, pose_to_se3
+from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from dimos.robot.catalog.openarm import OPENARM_V10_BIMANUAL_FK_MODEL
 from dimos.robot.catalog.ufactory import XARM7_FK_MODEL
 from dimos.utils.logging_config import setup_logger
 
@@ -47,8 +49,23 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
     from dimos.msgs.geometry_msgs.Pose import Pose
-    from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
     from dimos.teleop.quest.quest_types import Buttons
+
+    class _PostureTaskBase:
+        target_q: NDArray[np.floating[Any]] | None
+
+        def __init__(self, cost: float, lm_damping: float = 0.0, gain: float = 1.0) -> None: ...
+
+        def set_target(self, target_q: NDArray[np.floating[Any]]) -> None: ...
+
+        def compute_error(self, configuration: pink.Configuration) -> NDArray[np.floating[Any]]: ...
+
+        def compute_jacobian(
+            self, configuration: pink.Configuration
+        ) -> NDArray[np.floating[Any]]: ...
+
+else:
+    _PostureTaskBase = PinkPostureTask
 
 logger = setup_logger()
 
@@ -78,6 +95,53 @@ def _unqualified_joint_name(joint_name: str) -> str:
     return joint_name.rsplit("/", maxsplit=1)[-1]
 
 
+def _require_finite(name: str, value: float) -> None:
+    if not np.isfinite(value):
+        raise ValueError(f"{name} must be finite")
+
+
+def _require_non_negative(name: str, value: float) -> None:
+    _require_finite(name, value)
+    if value < 0.0:
+        raise ValueError(f"{name} must be non-negative")
+
+
+def _require_unit_interval(name: str, value: float) -> None:
+    _require_finite(name, value)
+    if value < 0.0 or value > 1.0:
+        raise ValueError(f"{name} must be in [0, 1]")
+
+
+class WeightedPostureTask(_PostureTaskBase):
+    """Pink posture task with per-joint residual and Jacobian weights."""
+
+    def __init__(
+        self,
+        cost: float,
+        weights: NDArray[np.floating[Any]],
+        lm_damping: float = 0.0,
+        gain: float = 1.0,
+    ) -> None:
+        super().__init__(cost=cost, lm_damping=lm_damping, gain=gain)
+        self.weights = np.asarray(weights, dtype=float)
+        if self.weights.ndim != 1:
+            raise ValueError("posture weights must be a one-dimensional vector")
+        if not np.isfinite(self.weights).all():
+            raise ValueError("posture weights must be finite")
+        if (self.weights < 0.0).any():
+            raise ValueError("posture weights must be non-negative")
+
+    def compute_error(self, configuration: pink.Configuration) -> NDArray[np.floating[Any]]:
+        error = np.asarray(super().compute_error(configuration), dtype=float)
+        weighted_error: NDArray[np.floating[Any]] = self.weights * error
+        return weighted_error
+
+    def compute_jacobian(self, configuration: pink.Configuration) -> NDArray[np.floating[Any]]:
+        jacobian = np.asarray(super().compute_jacobian(configuration), dtype=float)
+        weighted_jacobian: NDArray[np.floating[Any]] = self.weights[:, np.newaxis] * jacobian
+        return weighted_jacobian
+
+
 @dataclass
 class PinkIKTaskConfig:
     """Configuration shared by Pink teleop IK tasks."""
@@ -90,6 +154,8 @@ class PinkIKTaskConfig:
     hand: Literal["left", "right"] | None = "right"
     solver: str | None = None
     damping: float = 1e-12
+    num_solver_iterations: int = 1
+    amplify_factor: float = 1.0
     end_effector_frame: str = ""
     position_cost: float = 1.0
     orientation_cost: float = 1.0
@@ -98,6 +164,12 @@ class PinkIKTaskConfig:
     gripper_joint: str | None = None
     gripper_open_pos: float = 0.0
     gripper_closed_pos: float = 0.0
+    posture_cost: float = 0.0
+    posture_default_weight: float = 1.0
+    posture_joint_weights: dict[str, float] = field(default_factory=dict)
+    posture_reference: dict[str, float] = field(default_factory=dict)
+    posture_lm_damping: float = 0.0
+    posture_gain: float = 1.0
 
 
 class BasePinkIKTask(BaseControlTask):
@@ -106,7 +178,7 @@ class BasePinkIKTask(BaseControlTask):
     def __init__(self, name: str, config: PinkIKTaskConfig) -> None:
         if not config.joint_names:
             raise ValueError(f"{type(self).__name__} '{name}' requires at least one joint")
-        if config.hand not in ("left", "right"):
+        if config.hand is not None and config.hand not in ("left", "right"):
             raise ValueError(f"{type(self).__name__} '{name}' requires hand='left' or 'right'")
 
         self._name = name
@@ -128,6 +200,7 @@ class BasePinkIKTask(BaseControlTask):
         self._active = False
         self._gripper_target = config.gripper_open_pos
         self._logged_first_output = False
+        self._last_solution: NDArray[np.floating[Any]] | None = None
 
     @property
     def name(self) -> str:
@@ -176,27 +249,21 @@ class BasePinkIKTask(BaseControlTask):
         self._configuration.update(q_current)
         if not self._update_frame_targets(state, q_current):
             return None
-
-        dt = max(state.dt, 1e-9)
-        try:
-            velocity = solve_ik(
-                self._configuration,
-                self._pink_tasks,
-                dt,
-                solver=self._solver,
-                damping=self._config.damping,
-            )
-        except Exception as exc:
-            logger.warning(f"{type(self).__name__} {self._name}: Pink IK failed: {exc}")
+        if not self._update_extra_task_targets(q_current):
             return None
 
-        q_solution = np.asarray(self._configuration.integrate(velocity, dt), dtype=float)
+        dt = max(state.dt, 1e-9)
+        q_solution = self._solve_ik_refined(dt)
+        if q_solution is None:
+            return None
+
         if not check_joint_delta(q_solution, q_current, self._config.max_joint_delta_deg):
             logger.warning(
                 f"{type(self).__name__} {self._name}: joint delta exceeds "
                 f"{self._config.max_joint_delta_deg}°, rejecting solution"
             )
             return None
+        self._last_solution = q_solution
 
         joint_names = list(self._joint_names_list)
         positions = q_solution.flatten().tolist()
@@ -218,6 +285,41 @@ class BasePinkIKTask(BaseControlTask):
             positions=positions,
             mode=ControlMode.SERVO_POSITION,
         )
+
+    def _solve_ik_refined(self, dt: float) -> NDArray[np.floating[Any]] | None:
+        q_solution: NDArray[np.floating[Any]] | None = None
+        solver_dt = dt / self._config.num_solver_iterations
+        integration_dt = solver_dt * self._config.amplify_factor
+        for _ in range(self._config.num_solver_iterations):
+            try:
+                velocity = solve_ik(
+                    self._configuration,
+                    self._pink_tasks,
+                    solver_dt,
+                    solver=self._solver,
+                    damping=self._config.damping,
+                )
+            except Exception as exc:
+                logger.warning(f"{type(self).__name__} {self._name}: Pink IK failed: {exc}")
+                return None
+
+            velocity_array = np.asarray(velocity, dtype=float)
+            if not np.isfinite(velocity_array).all():
+                logger.warning(
+                    f"{type(self).__name__} {self._name}: Pink IK returned non-finite velocity"
+                )
+                return None
+            q_solution = np.asarray(
+                self._configuration.integrate(velocity_array, integration_dt), dtype=float
+            )
+            if not np.isfinite(q_solution).all():
+                logger.warning(
+                    f"{type(self).__name__} {self._name}: Pink IK returned non-finite output"
+                )
+                return None
+            self._configuration.update(q_solution)
+
+        return q_solution
 
     def on_gripper_trigger(self, value: float, _t_now: float = 0.0) -> bool:
         """Map analog trigger value to configured gripper position."""
@@ -263,6 +365,9 @@ class BasePinkIKTask(BaseControlTask):
 
     def _create_extra_tasks(self) -> list[Any]:
         return []
+
+    def _update_extra_task_targets(self, _q_current: NDArray[np.floating[Any]]) -> bool:
+        return True
 
     def _clear_target_state(self) -> None:
         """Clear concrete target state while holding ``self._lock``."""
@@ -407,6 +512,7 @@ class XArm7IKTask(SingleFramePinkIKTask):
     _config: XArm7IKTaskConfig
 
     def __init__(self, name: str, config: XArm7IKTaskConfig) -> None:
+        self._posture_task: WeightedPostureTask | None = None
         super().__init__(name, config)
 
     def _validate_model(self) -> None:
@@ -422,6 +528,8 @@ class XArm7IKTask(SingleFramePinkIKTask):
             raise ValueError(
                 f"XArm7IKTask '{self._name}' model has no frame '{self._config.end_effector_frame}'"
             )
+        self._validate_numeric_config()
+        self._validate_posture_config()
 
     def _create_frame_tasks(self) -> list[FrameTask]:
         return [
@@ -434,11 +542,306 @@ class XArm7IKTask(SingleFramePinkIKTask):
             )
         ]
 
+    def _create_extra_tasks(self) -> list[Any]:
+        if self._config.posture_cost <= 0.0:
+            return []
+
+        self._posture_task = WeightedPostureTask(
+            cost=self._config.posture_cost,
+            weights=self._posture_weights(),
+            lm_damping=self._config.posture_lm_damping,
+            gain=self._config.posture_gain,
+        )
+        return [self._posture_task]
+
+    def _update_extra_task_targets(self, q_current: NDArray[np.floating[Any]]) -> bool:
+        if self._posture_task is None:
+            return True
+
+        target = np.asarray(q_current, dtype=float).copy()
+        for joint_name, position in self._config.posture_reference.items():
+            target[self._posture_joint_index(joint_name)] = position
+        self._posture_task.set_target(target)
+        return True
+
+    def _clear_target_state(self) -> None:
+        super()._clear_target_state()
+
+    def _posture_weights(self) -> NDArray[np.floating[Any]]:
+        weights = np.full(self._model.nv, self._config.posture_default_weight, dtype=float)
+        for joint_name, weight in self._config.posture_joint_weights.items():
+            weights[self._posture_joint_index(joint_name)] = weight
+        return weights
+
+    def _validate_posture_joint_names(self) -> None:
+        for joint_name in [
+            *self._config.posture_joint_weights.keys(),
+            *self._config.posture_reference.keys(),
+        ]:
+            self._posture_joint_index(joint_name)
+
+    def _validate_numeric_config(self) -> None:
+        _require_non_negative("damping", self._config.damping)
+        _require_finite("amplify_factor", self._config.amplify_factor)
+        if self._config.amplify_factor <= 0.0:
+            raise ValueError("amplify_factor must be positive")
+        if self._config.num_solver_iterations < 1:
+            raise ValueError("num_solver_iterations must be positive")
+        _require_non_negative("position_cost", self._config.position_cost)
+        _require_non_negative("orientation_cost", self._config.orientation_cost)
+        _require_non_negative("lm_damping", self._config.lm_damping)
+        _require_unit_interval("gain", self._config.gain)
+        _require_finite("timeout", self._config.timeout)
+        if self._config.timeout < 0.0:
+            raise ValueError("timeout must be non-negative")
+        _require_finite("max_joint_delta_deg", self._config.max_joint_delta_deg)
+        if self._config.max_joint_delta_deg <= 0.0:
+            raise ValueError("max_joint_delta_deg must be positive")
+
+    def _validate_posture_config(self) -> None:
+        _require_non_negative("posture_cost", self._config.posture_cost)
+        _require_non_negative("posture_default_weight", self._config.posture_default_weight)
+        _require_non_negative("posture_lm_damping", self._config.posture_lm_damping)
+        _require_unit_interval("posture_gain", self._config.posture_gain)
+        self._validate_posture_joint_names()
+        for joint_name, weight in self._config.posture_joint_weights.items():
+            _require_non_negative(f"posture_joint_weights[{joint_name!r}]", weight)
+        for joint_name, position in self._config.posture_reference.items():
+            _require_finite(f"posture_reference[{joint_name!r}]", position)
+            index = self._posture_joint_index(joint_name)
+            lower = float(self._model.lowerPositionLimit[index])
+            upper = float(self._model.upperPositionLimit[index])
+            if position < lower or position > upper:
+                raise ValueError(
+                    f"posture_reference[{joint_name!r}]={position} is outside "
+                    f"model limits [{lower}, {upper}]"
+                )
+
+    def _posture_joint_index(self, joint_name: str) -> int:
+        names = {
+            configured_name: index for index, configured_name in enumerate(self._joint_names_list)
+        }
+        names.update(
+            {
+                _unqualified_joint_name(configured_name): index
+                for index, configured_name in enumerate(self._joint_names_list)
+            }
+        )
+        if joint_name not in names:
+            raise ValueError(
+                f"XArm7IKTask '{self._name}' posture joint '{joint_name}' is not in "
+                f"configured joints {self._joint_names_list}"
+            )
+        return names[joint_name]
+
+
+@dataclass
+class OpenArmBimanualIKTaskConfig(PinkIKTaskConfig):
+    """OpenArm whole-robot Pink teleop IK configuration."""
+
+    joint_names: list[str] = field(
+        default_factory=lambda: [
+            *[f"openarm_left_joint{i}" for i in range(1, 8)],
+            *[f"openarm_right_joint{i}" for i in range(1, 8)],
+        ]
+    )
+    model_path: str | Path = OPENARM_V10_BIMANUAL_FK_MODEL
+    hand: Literal["left", "right"] | None = None
+    left_task_name: str = "teleop_openarm_left"
+    right_task_name: str = "teleop_openarm_right"
+    left_end_effector_frame: str = "openarm_left_link7"
+    right_end_effector_frame: str = "openarm_right_link7"
+
+
+class OpenArmBimanualIKTask(BasePinkIKTask):
+    """Unified Pink IK task for bimanual OpenArm teleoperation."""
+
+    _config: OpenArmBimanualIKTaskConfig
+
+    def __init__(self, name: str, config: OpenArmBimanualIKTaskConfig) -> None:
+        self._target_poses: dict[str, Pose | PoseStamped] = {}
+        self._last_update_times: dict[str, float] = {}
+        self._initial_ee_poses: dict[str, pinocchio.SE3] = {}
+        self._logged_target_names: set[str] = set()
+        super().__init__(name, config)
+
+    @property
+    def target_task_names(self) -> tuple[str, str]:
+        """Quest task names accepted by this unified IK task."""
+        return (self._config.left_task_name, self._config.right_task_name)
+
+    def is_active(self) -> bool:
+        """Return true when at least one live bimanual target can produce IK output."""
+        with self._lock:
+            return self._active and bool(self._target_poses)
+
+    def on_cartesian_command(self, pose: Pose | PoseStamped, t_now: float) -> bool:
+        """Store the latest controller delta pose for one OpenArm target slot."""
+        frame_id = getattr(pose, "frame_id", "")
+        if frame_id not in self.target_task_names:
+            return False
+
+        with self._lock:
+            self._target_poses[frame_id] = pose
+            self._last_update_times[frame_id] = t_now
+            self._active = True
+        if frame_id not in self._logged_target_names:
+            logger.info(f"{type(self).__name__} {self._name}: received first {frame_id} target")
+            self._logged_target_names.add(frame_id)
+        return True
+
+    def _prepare_compute(self, state: CoordinatorState) -> bool:
+        return bool(self._live_targets(state.t_now))
+
+    def _update_frame_targets(
+        self, state: CoordinatorState, q_current: NDArray[np.floating[Any]]
+    ) -> bool:
+        live_targets = self._live_targets(state.t_now)
+        if not live_targets:
+            return False
+
+        live_frame_names = {self._frame_name_for_task(task_name) for task_name in live_targets}
+        for frame_task in self._frame_tasks:
+            if str(frame_task.frame) not in live_frame_names:
+                frame_task.set_target_from_configuration(self._configuration)
+
+        for task_name, raw_pose in live_targets.items():
+            frame_name = self._frame_name_for_task(task_name)
+            if not self._ensure_initial_ee_pose(frame_name, q_current):
+                return False
+            initial_ee_pose = self._initial_ee_poses.get(frame_name)
+            if initial_ee_pose is None:
+                return False
+            delta_se3 = pose_to_se3(raw_pose)
+            target_pose = pinocchio.SE3(
+                delta_se3.rotation @ initial_ee_pose.rotation,
+                initial_ee_pose.translation + delta_se3.translation,
+            )
+            self._frame_task_for_frame(frame_name).set_target(target_pose)
+        return True
+
+    def _validate_model(self) -> None:
+        super()._validate_model()
+        configured = list(self._joint_names_list)
+        model_joints = _model_joint_names(self._model)
+        if configured != model_joints:
+            raise ValueError(
+                f"OpenArmBimanualIKTask '{self._name}' joint names {configured} do not match "
+                f"model joints {model_joints}"
+            )
+        for frame_name in (
+            self._config.left_end_effector_frame,
+            self._config.right_end_effector_frame,
+        ):
+            if not self._model.existFrame(frame_name):
+                raise ValueError(
+                    f"OpenArmBimanualIKTask '{self._name}' model has no frame '{frame_name}'"
+                )
+        self._validate_numeric_config()
+
+    def _create_frame_tasks(self) -> list[FrameTask]:
+        return [
+            FrameTask(
+                self._config.left_end_effector_frame,
+                position_cost=self._config.position_cost,
+                orientation_cost=self._config.orientation_cost,
+                lm_damping=self._config.lm_damping,
+                gain=self._config.gain,
+            ),
+            FrameTask(
+                self._config.right_end_effector_frame,
+                position_cost=self._config.position_cost,
+                orientation_cost=self._config.orientation_cost,
+                lm_damping=self._config.lm_damping,
+                gain=self._config.gain,
+            ),
+        ]
+
+    def _clear_target_state(self) -> None:
+        self._target_poses.clear()
+        self._last_update_times.clear()
+        self._initial_ee_poses.clear()
+
+    def _live_targets(self, t_now: float) -> dict[str, Pose | PoseStamped]:
+        with self._lock:
+            stale = [
+                task_name
+                for task_name, last_update in self._last_update_times.items()
+                if self._config.timeout > 0 and t_now - last_update > self._config.timeout
+            ]
+            for task_name in stale:
+                logger.warning(f"{type(self).__name__} {self._name} target {task_name} timed out")
+                self._target_poses.pop(task_name, None)
+                self._last_update_times.pop(task_name, None)
+                self._initial_ee_poses.pop(self._frame_name_for_task(task_name), None)
+            if not self._target_poses:
+                self._active = False
+            return dict(self._target_poses)
+
+    def _ensure_initial_ee_pose(
+        self, frame_name: str, q_current: NDArray[np.floating[Any]]
+    ) -> bool:
+        if frame_name in self._initial_ee_poses:
+            return True
+        self._configuration.update(q_current)
+        self._initial_ee_poses[frame_name] = self._configuration.get_transform_frame_to_world(
+            frame_name
+        ).copy()
+        return True
+
+    def _frame_name_for_task(self, task_name: str) -> str:
+        if task_name == self._config.left_task_name:
+            return self._config.left_end_effector_frame
+        if task_name == self._config.right_task_name:
+            return self._config.right_end_effector_frame
+        raise ValueError(f"Unknown OpenArm target task name: {task_name}")
+
+    def _frame_task_for_frame(self, frame_name: str) -> FrameTask:
+        for frame_task in self._frame_tasks:
+            if str(frame_task.frame) == frame_name:
+                return frame_task
+        raise ValueError(f"OpenArm frame task not found for frame: {frame_name}")
+
+    def end_effector_pose(self, task_name: str) -> PoseStamped | None:
+        """Return the last solved end-effector pose for a left/right OpenArm target."""
+        if self._last_solution is None:
+            return None
+        frame_name = self._frame_name_for_task(task_name)
+        self._configuration.update(self._last_solution)
+        placement = self._configuration.get_transform_frame_to_world(frame_name)
+        quat = pinocchio.Quaternion(placement.rotation).coeffs()
+        return PoseStamped(
+            position=placement.translation.tolist(),
+            orientation=[float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3])],
+            frame_id=task_name,
+        )
+
+    def _validate_numeric_config(self) -> None:
+        _require_non_negative("damping", self._config.damping)
+        _require_finite("amplify_factor", self._config.amplify_factor)
+        if self._config.amplify_factor <= 0.0:
+            raise ValueError("amplify_factor must be positive")
+        if self._config.num_solver_iterations < 1:
+            raise ValueError("num_solver_iterations must be positive")
+        _require_non_negative("position_cost", self._config.position_cost)
+        _require_non_negative("orientation_cost", self._config.orientation_cost)
+        _require_non_negative("lm_damping", self._config.lm_damping)
+        _require_unit_interval("gain", self._config.gain)
+        _require_finite("timeout", self._config.timeout)
+        if self._config.timeout < 0.0:
+            raise ValueError("timeout must be non-negative")
+        _require_finite("max_joint_delta_deg", self._config.max_joint_delta_deg)
+        if self._config.max_joint_delta_deg <= 0.0:
+            raise ValueError("max_joint_delta_deg must be positive")
+
 
 __all__ = [
     "BasePinkIKTask",
+    "OpenArmBimanualIKTask",
+    "OpenArmBimanualIKTaskConfig",
     "PinkIKTaskConfig",
     "SingleFramePinkIKTask",
+    "WeightedPostureTask",
     "XArm7IKTask",
     "XArm7IKTaskConfig",
 ]
