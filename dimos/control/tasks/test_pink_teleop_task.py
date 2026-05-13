@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import numpy as np
-from pink.tasks import FrameTask
+from pink.tasks import DampingTask, FrameTask, PostureTask
 import pytest
 
 from dimos.control.coordinator import ControlCoordinator, ControlCoordinatorConfig, TaskConfig
@@ -28,7 +28,6 @@ from dimos.control.tasks.pink_teleop_task import (
     OpenArmBimanualIKTask,
     OpenArmBimanualIKTaskConfig,
     SingleFramePinkIKTask,
-    WeightedPostureTask,
     XArm7IKTask,
     XArm7IKTaskConfig,
 )
@@ -57,11 +56,10 @@ def _task(
     max_joint_delta_deg: float = 5.0,
     gripper_joint: str | None = None,
     posture_cost: float = 0.0,
-    posture_default_weight: float = 1.0,
-    posture_joint_weights: dict[str, float] | None = None,
     posture_reference: dict[str, float] | None = None,
     posture_lm_damping: float = 0.0,
     posture_gain: float = 1.0,
+    damping_task_cost: float = 0.0,
     gain: float = 1.0,
 ) -> XArm7IKTask:
     config = XArm7IKTaskConfig(
@@ -72,11 +70,10 @@ def _task(
         gripper_joint=gripper_joint,
         gain=gain,
         posture_cost=posture_cost,
-        posture_default_weight=posture_default_weight,
-        posture_joint_weights=posture_joint_weights or {},
         posture_reference=posture_reference or {},
         posture_lm_damping=posture_lm_damping,
         posture_gain=posture_gain,
+        damping_task_cost=damping_task_cost,
     )
     return XArm7IKTask("teleop_xarm", config)
 
@@ -139,10 +136,10 @@ def test_unsafe_joint_delta_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None
     assert task.compute(_state(t_now=1.0, dt=0.1)) is None
 
 
-def test_weighted_posture_task_weights_error_and_jacobian() -> None:
-    task = _task(posture_cost=0.2, posture_default_weight=2.0)
+def test_posture_task_is_pink_posture_task() -> None:
+    task = _task(posture_cost=0.2)
     posture_task = task._posture_task
-    assert isinstance(posture_task, WeightedPostureTask)
+    assert isinstance(posture_task, PostureTask)
 
     task._configuration.update(np.zeros(7, dtype=float))
     posture_task.set_target(np.ones(7, dtype=float))
@@ -150,8 +147,10 @@ def test_weighted_posture_task_weights_error_and_jacobian() -> None:
     error = posture_task.compute_error(task._configuration)
     jacobian = posture_task.compute_jacobian(task._configuration)
 
-    assert np.allclose(error, np.full(7, -2.0))
-    assert np.allclose(jacobian, np.eye(7) * 2.0)
+    assert error.shape == (7,)
+    assert jacobian.shape == (7, 7)
+    assert np.all(np.isfinite(error))
+    assert np.all(np.isfinite(jacobian))
 
 
 def test_posture_disabled_keeps_frame_task_only() -> None:
@@ -159,6 +158,42 @@ def test_posture_disabled_keeps_frame_task_only() -> None:
 
     assert task._posture_task is None
     assert len(task._pink_tasks) == 1
+
+
+def test_damping_disabled_by_default_keeps_frame_task_only() -> None:
+    task = _task()
+
+    assert task._posture_task is None
+    assert len(task._pink_tasks) == 1
+    assert isinstance(task._pink_tasks[0], FrameTask)
+
+
+def test_damping_enabled_adds_damping_task_to_solve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = _task(damping_task_cost=0.001)
+    task.on_cartesian_command(PoseStamped(frame_id="teleop_xarm"), t_now=1.0)
+    solve_tasks: list[object] = []
+
+    def capture_tasks(
+        _configuration: object, tasks: list[object], *_args: object, **_kwargs: object
+    ) -> np.ndarray:
+        solve_tasks.extend(tasks)
+        return np.zeros(7, dtype=float)
+
+    monkeypatch.setattr(pink_teleop_task, "solve_ik", capture_tasks)
+
+    assert task.compute(_state(t_now=1.0, dt=0.1)) is not None
+    assert task._frame_tasks[0] in solve_tasks
+    assert any(isinstance(solve_task, DampingTask) for solve_task in solve_tasks)
+
+
+def test_posture_and_damping_tasks_are_both_included() -> None:
+    task = _task(posture_cost=0.2, damping_task_cost=0.001)
+
+    assert task._posture_task is not None
+    assert task._posture_task in task._pink_tasks
+    assert any(isinstance(pink_task, DampingTask) for pink_task in task._pink_tasks)
 
 
 def test_posture_enabled_preserves_frame_task_in_solve(
@@ -229,16 +264,13 @@ def test_posture_reference_changes_observable_ik_output() -> None:
     assert not np.allclose(frame_only_output.positions, posture_output.positions)
 
 
-def test_posture_weight_and_reference_map_by_joint_name() -> None:
+def test_posture_reference_maps_joint_targets() -> None:
     task = _task(
         posture_cost=0.2,
-        posture_default_weight=0.5,
-        posture_joint_weights={"arm/joint2": 3.0, "joint4": 4.0},
         posture_reference={"arm/joint3": 1.25, "joint5": -0.5},
     )
 
     assert task._posture_task is not None
-    assert np.allclose(task._posture_task.weights, [0.5, 3.0, 0.5, 4.0, 0.5, 0.5, 0.5])
 
     q_current = np.arange(7, dtype=float)
     assert task._update_extra_task_targets(q_current)
@@ -272,10 +304,11 @@ def test_posture_reference_rejects_unknown_joint_name() -> None:
     ("field", "value", "match"),
     [
         ("posture_cost", -0.1, "posture_cost"),
-        ("posture_default_weight", -1.0, "posture_default_weight"),
         ("posture_lm_damping", float("nan"), "posture_lm_damping"),
         ("posture_gain", float("inf"), "posture_gain"),
         ("posture_gain", 1.1, "posture_gain"),
+        ("damping_task_cost", -0.1, "damping_task_cost"),
+        ("damping_task_cost", float("nan"), "damping_task_cost"),
         ("gain", 1.1, "gain"),
         ("max_joint_delta_deg", float("inf"), "max_joint_delta_deg"),
         ("timeout", -1.0, "timeout"),
@@ -285,12 +318,12 @@ def test_invalid_numeric_config_is_rejected(field: str, value: float, match: str
     with pytest.raises(ValueError, match=match):
         if field == "posture_cost":
             _task(posture_cost=value)
-        elif field == "posture_default_weight":
-            _task(posture_default_weight=value)
         elif field == "posture_lm_damping":
             _task(posture_lm_damping=value)
         elif field == "posture_gain":
             _task(posture_gain=value)
+        elif field == "damping_task_cost":
+            _task(damping_task_cost=value)
         elif field == "gain":
             _task(gain=value)
         elif field == "max_joint_delta_deg":
@@ -299,11 +332,6 @@ def test_invalid_numeric_config_is_rejected(field: str, value: float, match: str
             _task(timeout=value)
         else:
             raise AssertionError(f"Unhandled field: {field}")
-
-
-def test_invalid_posture_weight_is_rejected() -> None:
-    with pytest.raises(ValueError, match="posture_joint_weights"):
-        _task(posture_cost=0.2, posture_joint_weights={"arm/joint2": float("nan")})
 
 
 def test_out_of_limit_posture_reference_is_rejected() -> None:
@@ -325,10 +353,38 @@ def test_posture_enabled_solver_failure_returns_no_command(
     assert task.compute(_state(t_now=1.0, dt=0.1)) is None
 
 
+def test_damping_enabled_solver_failure_returns_no_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = _task(damping_task_cost=0.001)
+    task.on_cartesian_command(PoseStamped(frame_id="teleop_xarm"), t_now=1.0)
+
+    def fail_solve(*_args: object, **_kwargs: object) -> np.ndarray:
+        raise RuntimeError("solver failed")
+
+    monkeypatch.setattr(pink_teleop_task, "solve_ik", fail_solve)
+
+    assert task.compute(_state(t_now=1.0, dt=0.1)) is None
+
+
 def test_posture_enabled_unsafe_joint_delta_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     task = _task(posture_cost=0.2, max_joint_delta_deg=1.0)
+    task.on_cartesian_command(PoseStamped(frame_id="teleop_xarm"), t_now=1.0)
+
+    def large_velocity(*_args: object, **_kwargs: object) -> np.ndarray:
+        return np.ones(7) * 100.0
+
+    monkeypatch.setattr(pink_teleop_task, "solve_ik", large_velocity)
+
+    assert task.compute(_state(t_now=1.0, dt=0.1)) is None
+
+
+def test_damping_enabled_unsafe_joint_delta_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = _task(damping_task_cost=0.001, max_joint_delta_deg=1.0)
     task.on_cartesian_command(PoseStamped(frame_id="teleop_xarm"), t_now=1.0)
 
     def large_velocity(*_args: object, **_kwargs: object) -> np.ndarray:
@@ -519,15 +575,15 @@ def test_coordinator_creates_xarm7_pink_task_with_teleop_route_key() -> None:
             joint_names=XARM7_JOINTS,
             model_path=XARM7_FK_MODEL,
             hand="right",
-            pink_end_effector_frame="link7",
         )
     )
 
     assert isinstance(task, XArm7IKTask)
     assert task.name == "teleop_xarm"
+    assert task._config.end_effector_frame == "link7"
 
 
-def test_coordinator_passes_xarm7_pink_posture_config() -> None:
+def test_coordinator_creates_xarm7_pink_task_with_task_local_defaults() -> None:
     coordinator = ControlCoordinator.__new__(ControlCoordinator)
 
     task = coordinator._create_task_from_config(
@@ -537,23 +593,22 @@ def test_coordinator_passes_xarm7_pink_posture_config() -> None:
             joint_names=XARM7_JOINTS,
             model_path=XARM7_FK_MODEL,
             hand="right",
-            pink_end_effector_frame="link7",
-            pink_posture_cost=0.3,
-            pink_posture_default_weight=0.25,
-            pink_posture_joint_weights={"arm/joint2": 2.0},
-            pink_posture_reference={"arm/joint3": 0.75},
-            pink_posture_lm_damping=0.1,
-            pink_posture_gain=0.9,
         )
     )
 
     assert isinstance(task, XArm7IKTask)
-    assert task._config.posture_cost == 0.3
-    assert task._config.posture_default_weight == 0.25
-    assert task._config.posture_joint_weights == {"arm/joint2": 2.0}
-    assert task._config.posture_reference == {"arm/joint3": 0.75}
-    assert task._config.posture_lm_damping == 0.1
-    assert task._config.posture_gain == 0.9
+    assert task._config.damping == 1e-12
+    assert task._config.position_cost == 1.0
+    assert task._config.orientation_cost == 1.0
+    assert task._config.lm_damping == 1.0
+    assert task._config.gain == 1.0
+    assert task._config.posture_cost == 1e-3
+    assert task._config.posture_reference == {}
+    assert task._config.posture_lm_damping == 0.0
+    assert task._config.posture_gain == 1.0
+    assert task._config.damping_task_cost == 1e-3
+    assert task._posture_task is not None
+    assert any(isinstance(pink_task, DampingTask) for pink_task in task._pink_tasks)
 
 
 def test_coordinator_creates_openarm_bimanual_task_with_default_joints() -> None:
@@ -569,6 +624,14 @@ def test_coordinator_creates_openarm_bimanual_task_with_default_joints() -> None
 
     assert isinstance(task, OpenArmBimanualIKTask)
     assert task._config.joint_names == OPENARM_JOINTS
+    assert task.target_task_names == ("teleop_openarm_left", "teleop_openarm_right")
+    assert task._config.left_end_effector_frame == "openarm_left_link7"
+    assert task._config.right_end_effector_frame == "openarm_right_link7"
+    assert task._config.damping == 1e-12
+    assert task._config.position_cost == 1.0
+    assert task._config.orientation_cost == 1.0
+    assert task._config.lm_damping == 1.0
+    assert task._config.gain == 1.0
 
 
 def test_xarm7_pink_task_requests_cartesian_and_button_subscriptions() -> None:
@@ -581,7 +644,6 @@ def test_xarm7_pink_task_requests_cartesian_and_button_subscriptions() -> None:
                 joint_names=XARM7_JOINTS,
                 model_path=XARM7_FK_MODEL,
                 hand="right",
-                pink_end_effector_frame="link7",
             )
         ]
     )

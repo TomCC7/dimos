@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 import pink
 from pink import solve_ik
-from pink.tasks import FrameTask, PostureTask as PinkPostureTask
+from pink.tasks import DampingTask, FrameTask, PostureTask
 import pinocchio
 import qpsolvers
 
@@ -50,22 +50,6 @@ if TYPE_CHECKING:
 
     from dimos.msgs.geometry_msgs.Pose import Pose
     from dimos.teleop.quest.quest_types import Buttons
-
-    class _PostureTaskBase:
-        target_q: NDArray[np.floating[Any]] | None
-
-        def __init__(self, cost: float, lm_damping: float = 0.0, gain: float = 1.0) -> None: ...
-
-        def set_target(self, target_q: NDArray[np.floating[Any]]) -> None: ...
-
-        def compute_error(self, configuration: pink.Configuration) -> NDArray[np.floating[Any]]: ...
-
-        def compute_jacobian(
-            self, configuration: pink.Configuration
-        ) -> NDArray[np.floating[Any]]: ...
-
-else:
-    _PostureTaskBase = PinkPostureTask
 
 logger = setup_logger()
 
@@ -112,36 +96,6 @@ def _require_unit_interval(name: str, value: float) -> None:
         raise ValueError(f"{name} must be in [0, 1]")
 
 
-class WeightedPostureTask(_PostureTaskBase):
-    """Pink posture task with per-joint residual and Jacobian weights."""
-
-    def __init__(
-        self,
-        cost: float,
-        weights: NDArray[np.floating[Any]],
-        lm_damping: float = 0.0,
-        gain: float = 1.0,
-    ) -> None:
-        super().__init__(cost=cost, lm_damping=lm_damping, gain=gain)
-        self.weights = np.asarray(weights, dtype=float)
-        if self.weights.ndim != 1:
-            raise ValueError("posture weights must be a one-dimensional vector")
-        if not np.isfinite(self.weights).all():
-            raise ValueError("posture weights must be finite")
-        if (self.weights < 0.0).any():
-            raise ValueError("posture weights must be non-negative")
-
-    def compute_error(self, configuration: pink.Configuration) -> NDArray[np.floating[Any]]:
-        error = np.asarray(super().compute_error(configuration), dtype=float)
-        weighted_error: NDArray[np.floating[Any]] = self.weights * error
-        return weighted_error
-
-    def compute_jacobian(self, configuration: pink.Configuration) -> NDArray[np.floating[Any]]:
-        jacobian = np.asarray(super().compute_jacobian(configuration), dtype=float)
-        weighted_jacobian: NDArray[np.floating[Any]] = self.weights[:, np.newaxis] * jacobian
-        return weighted_jacobian
-
-
 @dataclass
 class PinkIKTaskConfig:
     """Configuration shared by Pink teleop IK tasks."""
@@ -163,8 +117,6 @@ class PinkIKTaskConfig:
     gripper_open_pos: float = 0.0
     gripper_closed_pos: float = 0.0
     posture_cost: float = 0.0
-    posture_default_weight: float = 1.0
-    posture_joint_weights: dict[str, float] = field(default_factory=dict)
     posture_reference: dict[str, float] = field(default_factory=dict)
     posture_lm_damping: float = 0.0
     posture_gain: float = 1.0
@@ -495,6 +447,8 @@ class XArm7IKTaskConfig(PinkIKTaskConfig):
     model_path: str | Path = XARM7_FK_MODEL
     end_effector_frame: str = "link7"
     hand: Literal["left", "right"] | None = "right"
+    posture_cost: float = 1e-2
+    damping_task_cost: float = 0.0
 
 
 class XArm7IKTask(SingleFramePinkIKTask):
@@ -503,7 +457,7 @@ class XArm7IKTask(SingleFramePinkIKTask):
     _config: XArm7IKTaskConfig
 
     def __init__(self, name: str, config: XArm7IKTaskConfig) -> None:
-        self._posture_task: WeightedPostureTask | None = None
+        self._posture_task: PostureTask | None = None
         super().__init__(name, config)
 
     def _validate_model(self) -> None:
@@ -534,16 +488,20 @@ class XArm7IKTask(SingleFramePinkIKTask):
         ]
 
     def _create_extra_tasks(self) -> list[Any]:
-        if self._config.posture_cost <= 0.0:
-            return []
+        extra_tasks: list[Any] = []
 
-        self._posture_task = WeightedPostureTask(
-            cost=self._config.posture_cost,
-            weights=self._posture_weights(),
-            lm_damping=self._config.posture_lm_damping,
-            gain=self._config.posture_gain,
-        )
-        return [self._posture_task]
+        if self._config.posture_cost > 0.0:
+            self._posture_task = PostureTask(
+                cost=self._config.posture_cost,
+                lm_damping=self._config.posture_lm_damping,
+                gain=self._config.posture_gain,
+            )
+            extra_tasks.append(self._posture_task)
+
+        if self._config.damping_task_cost > 0.0:
+            extra_tasks.append(DampingTask(cost=self._config.damping_task_cost))
+
+        return extra_tasks
 
     def _update_extra_task_targets(self, q_current: NDArray[np.floating[Any]]) -> bool:
         if self._posture_task is None:
@@ -558,21 +516,13 @@ class XArm7IKTask(SingleFramePinkIKTask):
     def _clear_target_state(self) -> None:
         super()._clear_target_state()
 
-    def _posture_weights(self) -> NDArray[np.floating[Any]]:
-        weights = np.full(self._model.nv, self._config.posture_default_weight, dtype=float)
-        for joint_name, weight in self._config.posture_joint_weights.items():
-            weights[self._posture_joint_index(joint_name)] = weight
-        return weights
-
     def _validate_posture_joint_names(self) -> None:
-        for joint_name in [
-            *self._config.posture_joint_weights.keys(),
-            *self._config.posture_reference.keys(),
-        ]:
+        for joint_name in self._config.posture_reference.keys():
             self._posture_joint_index(joint_name)
 
     def _validate_numeric_config(self) -> None:
         _require_non_negative("damping", self._config.damping)
+        _require_non_negative("damping_task_cost", self._config.damping_task_cost)
         _require_non_negative("position_cost", self._config.position_cost)
         _require_non_negative("orientation_cost", self._config.orientation_cost)
         _require_non_negative("lm_damping", self._config.lm_damping)
@@ -586,12 +536,9 @@ class XArm7IKTask(SingleFramePinkIKTask):
 
     def _validate_posture_config(self) -> None:
         _require_non_negative("posture_cost", self._config.posture_cost)
-        _require_non_negative("posture_default_weight", self._config.posture_default_weight)
         _require_non_negative("posture_lm_damping", self._config.posture_lm_damping)
         _require_unit_interval("posture_gain", self._config.posture_gain)
         self._validate_posture_joint_names()
-        for joint_name, weight in self._config.posture_joint_weights.items():
-            _require_non_negative(f"posture_joint_weights[{joint_name!r}]", weight)
         for joint_name, position in self._config.posture_reference.items():
             _require_finite(f"posture_reference[{joint_name!r}]", position)
             index = self._posture_joint_index(joint_name)
@@ -822,7 +769,6 @@ __all__ = [
     "OpenArmBimanualIKTaskConfig",
     "PinkIKTaskConfig",
     "SingleFramePinkIKTask",
-    "WeightedPostureTask",
     "XArm7IKTask",
     "XArm7IKTaskConfig",
 ]

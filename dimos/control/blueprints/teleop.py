@@ -174,7 +174,6 @@ coordinator_teleop_xarm7 = autoconnect(
                 task_type="xarm7_pink_ik",
                 task_name="teleop_xarm",
                 model_path=XARM7_FK_MODEL,
-                pink_end_effector_frame="link7",
                 hand="right",
                 gripper_joint=make_gripper_joints("arm")[0],
                 gripper_open_pos=0.85,

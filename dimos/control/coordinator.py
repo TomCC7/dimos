@@ -92,6 +92,8 @@ class TaskConfig:
         gripper_joint: Joint name for gripper virtual joint
         gripper_open_pos: Gripper position at trigger 0.0
         gripper_closed_pos: Gripper position at trigger 1.0
+        max_joint_delta_deg: Maximum allowed per-tick IK joint delta in degrees
+        timeout: Teleop target timeout in seconds
     """
 
     name: str
@@ -106,24 +108,6 @@ class TaskConfig:
     gripper_joint: str | None = None
     gripper_open_pos: float = 0.0
     gripper_closed_pos: float = 0.0
-    # Pink IK specific
-    pink_solver: str | None = None
-    pink_damping: float = 1e-12
-    pink_end_effector_frame: str = ""
-    pink_left_end_effector_frame: str = ""
-    pink_right_end_effector_frame: str = ""
-    pink_left_task_name: str = "teleop_openarm_left"
-    pink_right_task_name: str = "teleop_openarm_right"
-    pink_position_cost: float = 1.0
-    pink_orientation_cost: float = 1.0
-    pink_lm_damping: float = 1.0
-    pink_gain: float = 1.0
-    pink_posture_cost: float = 0.0
-    pink_posture_default_weight: float = 1.0
-    pink_posture_joint_weights: dict[str, float] = field(default_factory=dict)
-    pink_posture_reference: dict[str, float] = field(default_factory=dict)
-    pink_posture_lm_damping: float = 0.0
-    pink_posture_gain: float = 1.0
     max_joint_delta_deg: float = 5.0
     timeout: float = 0.5
 
@@ -405,19 +389,6 @@ class ControlCoordinator(Module):
                     timeout=cfg.timeout,
                     max_joint_delta_deg=cfg.max_joint_delta_deg,
                     hand=cfg.hand,
-                    solver=cfg.pink_solver,
-                    damping=cfg.pink_damping,
-                    end_effector_frame=cfg.pink_end_effector_frame or "link7",
-                    position_cost=cfg.pink_position_cost,
-                    orientation_cost=cfg.pink_orientation_cost,
-                    lm_damping=cfg.pink_lm_damping,
-                    gain=cfg.pink_gain,
-                    posture_cost=cfg.pink_posture_cost,
-                    posture_default_weight=cfg.pink_posture_default_weight,
-                    posture_joint_weights=cfg.pink_posture_joint_weights,
-                    posture_reference=cfg.pink_posture_reference,
-                    posture_lm_damping=cfg.pink_posture_lm_damping,
-                    posture_gain=cfg.pink_posture_gain,
                     gripper_joint=cfg.gripper_joint,
                     gripper_open_pos=cfg.gripper_open_pos,
                     gripper_closed_pos=cfg.gripper_closed_pos,
@@ -447,18 +418,6 @@ class ControlCoordinator(Module):
                     priority=cfg.priority,
                     timeout=cfg.timeout,
                     max_joint_delta_deg=cfg.max_joint_delta_deg,
-                    solver=cfg.pink_solver,
-                    damping=cfg.pink_damping,
-                    left_task_name=cfg.pink_left_task_name,
-                    right_task_name=cfg.pink_right_task_name,
-                    left_end_effector_frame=cfg.pink_left_end_effector_frame
-                    or "openarm_left_link7",
-                    right_end_effector_frame=cfg.pink_right_end_effector_frame
-                    or "openarm_right_link7",
-                    position_cost=cfg.pink_position_cost,
-                    orientation_cost=cfg.pink_orientation_cost,
-                    lm_damping=cfg.pink_lm_damping,
-                    gain=cfg.pink_gain,
                     **task_config_kwargs,
                 ),
             )
