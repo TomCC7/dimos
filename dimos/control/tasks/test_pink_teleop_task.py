@@ -21,7 +21,6 @@ from pink.tasks import FrameTask
 import pytest
 
 from dimos.control.coordinator import ControlCoordinator, ControlCoordinatorConfig, TaskConfig
-from dimos.control.pink_ik_visualization import XArm7PinkIkDesiredState
 from dimos.control.task import ControlMode, CoordinatorState, JointStateSnapshot
 from dimos.control.tasks import pink_teleop_task
 from dimos.control.tasks.pink_teleop_task import (
@@ -570,28 +569,6 @@ def test_coordinator_creates_openarm_bimanual_task_with_default_joints() -> None
 
     assert isinstance(task, OpenArmBimanualIKTask)
     assert task._config.joint_names == OPENARM_JOINTS
-
-
-def test_visualization_passes_xarm7_pink_posture_config() -> None:
-    module = XArm7PinkIkDesiredState(
-        joint_names=XARM7_JOINTS,
-        model_path=XARM7_FK_MODEL,
-        posture_cost=0.3,
-        posture_default_weight=0.25,
-        posture_joint_weights={"arm/joint2": 2.0},
-        posture_reference={"arm/joint3": 0.75},
-        posture_lm_damping=0.1,
-        posture_gain=0.9,
-    )
-    try:
-        assert module._task._config.posture_cost == 0.3
-        assert module._task._config.posture_default_weight == 0.25
-        assert module._task._config.posture_joint_weights == {"arm/joint2": 2.0}
-        assert module._task._config.posture_reference == {"arm/joint3": 0.75}
-        assert module._task._config.posture_lm_damping == 0.1
-        assert module._task._config.posture_gain == 0.9
-    finally:
-        module.stop()
 
 
 def test_xarm7_pink_task_requests_cartesian_and_button_subscriptions() -> None:

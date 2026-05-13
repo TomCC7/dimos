@@ -84,7 +84,7 @@ teleop/
 
 ```bash
 dimos run teleop-quest-rerun     # Quest teleop + Rerun viz
-dimos --listen-host 0.0.0.0 --simulation run teleop-quest-openarm-rerun  # OpenArm bimanual Pink IK desired-state Rerun viz
+dimos --listen-host 0.0.0.0 --simulation run teleop-quest-xarm7  # XArm7 Quest teleop in MuJoCo sim
 dimos run teleop-phone-go2      # Phone → Go2
 ```
 

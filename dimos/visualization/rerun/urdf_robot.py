@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Rerun URDF robot visualization helpers and modules."""
+"""Deprecated Rerun URDF robot visualization helpers and modules.
+
+Use ``dimos.simulation.engines.viser_urdf_sim_module`` for new desired-state
+URDF robot visualization.
+"""
 
 from __future__ import annotations
 
@@ -20,6 +24,7 @@ from pathlib import Path
 import re
 import tempfile
 from typing import TYPE_CHECKING, Any
+import warnings
 
 import numpy as np
 import pinocchio
@@ -67,7 +72,10 @@ def normalize_joint_name(joint_name: str) -> str:
 
 
 class RerunUrdfRobotVisualizer(Module):
-    """Load a URDF in Rerun and update its joint transforms from ``JointState``."""
+    """Deprecated: load a URDF in Rerun and update joints from ``JointState``.
+
+    New desired-state robot visualization should use ``ViserUrdfSimModule``.
+    """
 
     config: RerunUrdfRobotVisualizerConfig
 
@@ -90,6 +98,12 @@ class RerunUrdfRobotVisualizer(Module):
 
     @rpc
     def start(self) -> None:
+        warnings.warn(
+            "RerunUrdfRobotVisualizer is deprecated; use ViserUrdfSimModule for "
+            "desired-state URDF robot visualization.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._load_urdf()
         super().start()
 
