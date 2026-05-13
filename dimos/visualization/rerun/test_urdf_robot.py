@@ -25,6 +25,7 @@ import rerun.urdf as rr_urdf
 
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.JointState import JointState
+from dimos.robot.catalog.openarm import OPENARM_V10_BIMANUAL_FK_MODEL
 from dimos.robot.catalog.ufactory import XARM7_FK_MODEL
 from dimos.visualization.rerun import urdf_robot
 from dimos.visualization.rerun.urdf_robot import (
@@ -47,9 +48,10 @@ def test_xarm7_urdf_loads_and_computes_revolute_joint_transform() -> None:
 
 
 def test_normalize_joint_name_supports_dimos_prefixes() -> None:
-    assert normalize_joint_name("arm/joint1", ["arm/"]) == "joint1"
-    assert normalize_joint_name("right_arm/joint2", []) == "joint2"
-    assert normalize_joint_name("joint3", ["arm/"]) == "joint3"
+    assert normalize_joint_name("arm/joint1") == "joint1"
+    assert normalize_joint_name("left_arm/joint1") == "joint1"
+    assert normalize_joint_name("openarm_left_joint1") == "openarm_left_joint1"
+    assert normalize_joint_name("joint3") == "joint3"
 
 
 def test_package_uris_resolve_to_absolute_mesh_paths() -> None:
@@ -60,6 +62,18 @@ def test_package_uris_resolve_to_absolute_mesh_paths() -> None:
 
     assert "package://" not in resolved
     assert str(package_path / "meshes/xarm7/visual/link1.stl") in resolved
+
+
+def test_package_uri_resolution_ignores_commented_mesh_templates() -> None:
+    package_path = Path(str(OPENARM_V10_BIMANUAL_FK_MODEL)).parents[2]
+    text = Path(str(OPENARM_V10_BIMANUAL_FK_MODEL)).read_text()
+
+    resolved = _resolve_package_uris(text, {"openarm_description": package_path})
+
+    assert "${arm_type}" not in resolved
+    assert "${name}" not in resolved
+    assert "package://" not in resolved
+    assert str(package_path / "meshes/arm/v10/visual/link0.dae") in resolved
 
 
 def test_joint_state_updates_named_urdf_joints_and_preserves_omitted_state(
@@ -101,6 +115,26 @@ def test_joint_state_updates_named_urdf_joints_and_preserves_omitted_state(
         module.stop()
 
 
+def test_urdf_load_logs_initial_joint_transforms(monkeypatch: pytest.MonkeyPatch) -> None:
+    logged: list[tuple[str, Any]] = []
+
+    monkeypatch.setattr(urdf_robot, "rerun_init", lambda *args, **kwargs: None)
+    monkeypatch.setattr(rr, "log_file_from_path", lambda *args, **kwargs: None)
+    monkeypatch.setattr(rr, "log", lambda path, archetype: logged.append((path, archetype)))
+
+    module = RerunUrdfRobotVisualizer(
+        urdf_path=OPENARM_V10_BIMANUAL_FK_MODEL,
+        entity_path_prefix="world/openarm_desired",
+    )
+    try:
+        module._load_urdf()
+
+        assert len(module._joint_lookup) == 14
+        assert sum(path == "world/openarm_desired/transforms" for path, _ in logged) >= 14
+    finally:
+        module.stop()
+
+
 def test_debug_pose_logging_uses_distinct_transform_and_marker_entities(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -121,3 +155,45 @@ def test_debug_pose_logging_uses_distinct_transform_and_marker_entities(
         "world/debug/desired_controller/marker",
     ]
     assert logged[2][1].positions.as_arrow_array().to_pylist() == [[0.0, 0.0, 0.0]]
+
+
+def test_debug_pose_entity_path_can_route_by_frame_id() -> None:
+    module = RerunUrdfRobotVisualizer.__new__(RerunUrdfRobotVisualizer)
+    module.config = RerunUrdfRobotVisualizerConfig(
+        urdf_path=XARM7_FK_MODEL,
+        route_debug_poses_by_frame_id=True,
+    )
+
+    path = module._debug_entity_path(
+        "world/debug/openarm/desired_target",
+        PoseStamped(frame_id="teleop_openarm_left"),
+    )
+
+    assert path == "world/debug/openarm/desired_target/teleop_openarm_left"
+
+
+def test_debug_pose_entity_path_sanitizes_frame_id() -> None:
+    module = RerunUrdfRobotVisualizer.__new__(RerunUrdfRobotVisualizer)
+    module.config = RerunUrdfRobotVisualizerConfig(
+        urdf_path=XARM7_FK_MODEL,
+        route_debug_poses_by_frame_id=True,
+    )
+
+    path = module._debug_entity_path(
+        "world/debug/openarm/desired_target",
+        PoseStamped(frame_id="../../bad path"),
+    )
+
+    assert path == "world/debug/openarm/desired_target/.._.._bad_path"
+
+
+def test_package_uri_resolution_rejects_paths_outside_package(tmp_path: Path) -> None:
+    package_path = tmp_path / "pkg"
+    package_path.mkdir()
+    outside = tmp_path / "outside.stl"
+    outside.write_text("mesh")
+    text = 'filename="package://pkg/../outside.stl"'
+
+    resolved = _resolve_package_uris(text, {"pkg": package_path})
+
+    assert resolved == text

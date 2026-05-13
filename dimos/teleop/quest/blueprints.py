@@ -25,11 +25,15 @@ from dimos.control.blueprints.teleop import (
     coordinator_teleop_xarm6,
     coordinator_teleop_xarm7,
 )
-from dimos.control.pink_ik_visualization import XArm7PinkIkDesiredState
+from dimos.control.pink_ik_visualization import (
+    OpenArmBimanualPinkIkDesiredState,
+    XArm7PinkIkDesiredState,
+)
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.transport import LCMTransport
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.JointState import JointState
+from dimos.robot.catalog.openarm import OPENARM_V10_BIMANUAL_FK_MODEL
 from dimos.robot.catalog.ufactory import XARM7_FK_MODEL
 from dimos.teleop.quest.quest_extensions import ArmTeleopModule
 from dimos.teleop.quest.quest_types import Buttons
@@ -66,7 +70,15 @@ teleop_quest_xarm7 = autoconnect(
 # XArm7 teleop Rerun debug path: right controller -> Pink IK desired joints -> URDF robot.
 teleop_quest_xarm7_rerun = autoconnect(
     ArmTeleopModule.blueprint(task_names={"right": "teleop_xarm"}),
-    XArm7PinkIkDesiredState.blueprint(),
+    XArm7PinkIkDesiredState.blueprint(
+        position_cost=8.0,
+        orientation_cost=2.0,
+        lm_damping=3.0,
+        num_solver_iterations=3,
+        amplify_factor=1.0,
+        posture_cost=0.01,
+        posture_lm_damping=1.0,
+    ),
     RerunUrdfRobotVisualizer.blueprint(
         urdf_path=XARM7_FK_MODEL,
         entity_path_prefix="world/xarm7_desired",
@@ -88,8 +100,52 @@ teleop_quest_xarm7_rerun = autoconnect(
         ("desired_joint_state", JointState): LCMTransport(
             "/teleop/xarm7/desired_joint_state", JointState
         ),
+        ("joint_state", JointState): LCMTransport("/teleop/xarm7/desired_joint_state", JointState),
+    }
+)
+
+
+# OpenArm bimanual teleop Rerun debug path: left/right controllers -> one Pink IK solve.
+teleop_quest_openarm_rerun = autoconnect(
+    ArmTeleopModule.blueprint(
+        task_names={"left": "teleop_openarm_left", "right": "teleop_openarm_right"}
+    ),
+    OpenArmBimanualPinkIkDesiredState.blueprint(),
+    RerunUrdfRobotVisualizer.blueprint(
+        urdf_path=OPENARM_V10_BIMANUAL_FK_MODEL,
+        entity_path_prefix="world/openarm_desired",
+        desired_controller_entity_path="world/debug/openarm/desired_controller",
+        desired_target_entity_path="world/debug/openarm/desired_target",
+        end_effector_entity_path="world/debug/openarm/desired_end_effector",
+        route_debug_poses_by_frame_id=True,
+    ),
+    vis_module("rerun"),
+).transports(
+    {
+        ("left_controller_output", PoseStamped): LCMTransport(
+            "/teleop/openarm/cartesian_command", PoseStamped
+        ),
+        ("right_controller_output", PoseStamped): LCMTransport(
+            "/teleop/openarm/cartesian_command", PoseStamped
+        ),
+        ("cartesian_command", PoseStamped): LCMTransport(
+            "/teleop/openarm/cartesian_command", PoseStamped
+        ),
+        ("desired_controller_pose", PoseStamped): LCMTransport(
+            "/teleop/openarm/desired_controller_pose", PoseStamped
+        ),
+        ("desired_target_pose", PoseStamped): LCMTransport(
+            "/teleop/openarm/desired_target_pose", PoseStamped
+        ),
+        ("end_effector_pose", PoseStamped): LCMTransport(
+            "/teleop/openarm/end_effector_pose", PoseStamped
+        ),
+        ("buttons", Buttons): LCMTransport("/teleop/buttons", Buttons),
+        ("desired_joint_state", JointState): LCMTransport(
+            "/teleop/openarm/desired_joint_state", JointState
+        ),
         ("joint_state", JointState): LCMTransport(
-            "/teleop/xarm7/desired_joint_state", JointState
+            "/teleop/openarm/desired_joint_state", JointState
         ),
     }
 )
@@ -142,8 +198,10 @@ teleop_quest_dual = autoconnect(
 
 __all__ = [
     "teleop_quest_dual",
+    "teleop_quest_openarm_rerun",
     "teleop_quest_piper",
     "teleop_quest_rerun",
     "teleop_quest_xarm6",
     "teleop_quest_xarm7",
+    "teleop_quest_xarm7_rerun",
 ]

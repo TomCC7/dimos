@@ -36,12 +36,12 @@ from dimos.visualization.rerun.constants import RERUN_GRPC_PORT
 from dimos.visualization.rerun.init import rerun_init
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
-
     from numpy.typing import NDArray
     from rerun.urdf import UrdfJoint, UrdfTree
 
 logger = setup_logger()
+
+_ENTITY_PATH_SAFE_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
 class RerunUrdfRobotVisualizerConfig(ModuleConfig):
@@ -50,22 +50,19 @@ class RerunUrdfRobotVisualizerConfig(ModuleConfig):
     urdf_path: str | Path
     entity_path_prefix: str = "world/robot"
     frame_prefix: str = ""
-    joint_name_prefixes: list[str] = Field(default_factory=lambda: ["arm/"])
     desired_controller_entity_path: str = "world/debug/desired_controller"
     desired_target_entity_path: str = "world/debug/desired_target"
     end_effector_entity_path: str = "world/debug/end_effector"
     debug_pose_axis_length: float = 0.15
+    route_debug_poses_by_frame_id: bool = False
     end_effector_frame: str = ""
     connect_url: str | None = None
     memory_limit: str = "25%"
     package_paths: dict[str, str | Path] = Field(default_factory=dict)
 
 
-def normalize_joint_name(joint_name: str, prefixes: Iterable[str]) -> str:
+def normalize_joint_name(joint_name: str) -> str:
     """Map DimOS joint names such as ``arm/joint1`` to URDF names."""
-    for prefix in prefixes:
-        if joint_name.startswith(prefix):
-            return joint_name[len(prefix) :]
     return joint_name.rsplit("/", maxsplit=1)[-1]
 
 
@@ -107,13 +104,25 @@ class RerunUrdfRobotVisualizer(Module):
         self.update_joint_state(msg)
 
     async def handle_desired_controller_pose(self, msg: PoseStamped) -> None:
-        self.log_pose(msg, self.config.desired_controller_entity_path, [255, 120, 180])
+        self.log_pose(
+            msg,
+            self._debug_entity_path(self.config.desired_controller_entity_path, msg),
+            [255, 120, 180],
+        )
 
     async def handle_desired_target_pose(self, msg: PoseStamped) -> None:
-        self.log_pose(msg, self.config.desired_target_entity_path, [80, 180, 255])
+        self.log_pose(
+            msg,
+            self._debug_entity_path(self.config.desired_target_entity_path, msg),
+            [80, 180, 255],
+        )
 
     async def handle_end_effector_pose(self, msg: PoseStamped) -> None:
-        self.log_pose(msg, self.config.end_effector_entity_path, [80, 255, 120])
+        self.log_pose(
+            msg,
+            self._debug_entity_path(self.config.end_effector_entity_path, msg),
+            [80, 255, 120],
+        )
 
     def _load_urdf(self) -> None:
         path = Path(str(self.config.urdf_path)).expanduser()
@@ -140,6 +149,7 @@ class RerunUrdfRobotVisualizer(Module):
             for joint in self._urdf_tree.joints()
             if joint.joint_type in ("revolute", "continuous")
         }
+        self._log_initial_joint_transforms()
 
         if self.config.end_effector_frame:
             self._pin_model = pinocchio.buildModelFromUrdf(str(path))
@@ -188,7 +198,7 @@ class RerunUrdfRobotVisualizer(Module):
     def update_joint_state(self, msg: JointState) -> None:
         """Log joint transforms for the named positions present in ``msg``."""
         for raw_name, position in zip(msg.name, msg.position, strict=False):
-            joint_name = normalize_joint_name(raw_name, self.config.joint_name_prefixes)
+            joint_name = normalize_joint_name(raw_name)
             joint = self._joint_lookup.get(joint_name)
             if joint is None:
                 if joint_name not in self._warned_unmatched:
@@ -202,6 +212,10 @@ class RerunUrdfRobotVisualizer(Module):
             self._set_pin_joint(joint_name, value)
 
         self._log_computed_end_effector_pose()
+
+    def _log_initial_joint_transforms(self) -> None:
+        for joint in self._joint_lookup.values():
+            rr.log(self._transform_entity_path, joint.compute_transform(0.0))
 
     def log_pose(self, pose: PoseStamped, entity_path: str, color: list[int]) -> None:
         """Log a debug pose as a transform plus a colored point marker."""
@@ -225,6 +239,14 @@ class RerunUrdfRobotVisualizer(Module):
     @property
     def _transform_entity_path(self) -> str:
         return f"{self.config.entity_path_prefix}/transforms"
+
+    def _debug_entity_path(self, base_path: str, pose: PoseStamped) -> str:
+        if not self.config.route_debug_poses_by_frame_id or not pose.frame_id:
+            return base_path
+        safe_frame_id = _ENTITY_PATH_SAFE_CHARS.sub("_", pose.frame_id).strip("_")
+        if not safe_frame_id:
+            return base_path
+        return f"{base_path}/{safe_frame_id}"
 
     def _set_pin_joint(self, joint_name: str, position: float) -> None:
         if self._q is None:
@@ -263,6 +285,7 @@ __all__ = [
 
 
 def _resolve_package_uris(text: str, package_paths: dict[str, Path]) -> str:
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
     pattern = re.compile(r"package://([^/]+)/([^\"'<>\s)]+)")
 
     def replace(match: re.Match[str]) -> str:
@@ -271,7 +294,11 @@ def _resolve_package_uris(text: str, package_paths: dict[str, Path]) -> str:
         package_path = package_paths.get(package_name)
         if package_path is None:
             return match.group(0)
-        resolved_path = package_path / relative_path
+        resolved_package_path = package_path.resolve()
+        resolved_path = (package_path / relative_path).resolve()
+        if not resolved_path.is_relative_to(resolved_package_path):
+            logger.warning(f"Rerun URDF package URI escapes package root: {match.group(0)}")
+            return match.group(0)
         if not resolved_path.exists():
             logger.warning(f"Rerun URDF package URI target not found: {resolved_path}")
             return match.group(0)
