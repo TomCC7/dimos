@@ -64,8 +64,6 @@ def _task(
     posture_lm_damping: float = 0.0,
     posture_gain: float = 1.0,
     gain: float = 1.0,
-    num_solver_iterations: int = 1,
-    amplify_factor: float = 1.0,
 ) -> XArm7IKTask:
     config = XArm7IKTaskConfig(
         joint_names=XARM7_JOINTS,
@@ -74,8 +72,6 @@ def _task(
         max_joint_delta_deg=max_joint_delta_deg,
         gripper_joint=gripper_joint,
         gain=gain,
-        num_solver_iterations=num_solver_iterations,
-        amplify_factor=amplify_factor,
         posture_cost=posture_cost,
         posture_default_weight=posture_default_weight,
         posture_joint_weights=posture_joint_weights or {},
@@ -186,69 +182,30 @@ def test_posture_enabled_preserves_frame_task_in_solve(
     assert task._posture_task in solve_tasks
 
 
-def test_iterative_refinement_runs_multiple_solve_steps(
+def test_pink_ik_uses_single_official_solve_and_integrate_step(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    task = _task(num_solver_iterations=3, amplify_factor=1.0)
+    task = _task()
     task.on_cartesian_command(PoseStamped(frame_id="teleop_xarm"), t_now=1.0)
-    calls: list[np.ndarray] = []
+    calls: list[float] = []
 
-    def small_velocity(*_args: object, **_kwargs: object) -> np.ndarray:
-        calls.append(task._configuration.q.copy())
-        return np.ones(7, dtype=float) * 0.1
-
-    monkeypatch.setattr(pink_teleop_task, "solve_ik", small_velocity)
-
-    output = task.compute(_state(t_now=1.0, dt=0.1))
-
-    assert output is not None
-    assert len(calls) == 3
-    assert np.allclose(calls[0], np.zeros(7))
-    assert np.allclose(calls[1], np.full(7, 0.1 * 0.1 / 3.0))
-    assert np.allclose(calls[2], np.full(7, 2.0 * 0.1 * 0.1 / 3.0))
-    assert output.positions is not None
-    assert np.allclose(output.positions, np.full(7, 0.01))
-
-
-def test_amplify_factor_scales_iterative_refinement_integration(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    task = _task(num_solver_iterations=2, amplify_factor=2.0)
-    task.on_cartesian_command(PoseStamped(frame_id="teleop_xarm"), t_now=1.0)
-
-    def small_velocity(*_args: object, **_kwargs: object) -> np.ndarray:
-        return np.ones(7, dtype=float) * 0.1
-
-    monkeypatch.setattr(pink_teleop_task, "solve_ik", small_velocity)
-
-    output = task.compute(_state(t_now=1.0, dt=0.1))
-
-    assert output is not None
-    assert output.positions is not None
-    assert np.allclose(output.positions, np.full(7, 0.02))
-
-
-def test_iterative_refinement_preserves_single_tick_delta(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    single_step = _task(num_solver_iterations=1, amplify_factor=1.0)
-    refined = _task(num_solver_iterations=3, amplify_factor=1.0)
-    single_step.on_cartesian_command(PoseStamped(frame_id="teleop_xarm"), t_now=1.0)
-    refined.on_cartesian_command(PoseStamped(frame_id="teleop_xarm"), t_now=1.0)
-
-    def constant_velocity(*_args: object, **_kwargs: object) -> np.ndarray:
+    def constant_velocity(
+        _configuration: object,
+        _tasks: list[object],
+        dt: float,
+        **_kwargs: object,
+    ) -> np.ndarray:
+        calls.append(dt)
         return np.ones(7, dtype=float) * 0.1
 
     monkeypatch.setattr(pink_teleop_task, "solve_ik", constant_velocity)
 
-    single_output = single_step.compute(_state(t_now=1.0, dt=0.1))
-    refined_output = refined.compute(_state(t_now=1.0, dt=0.1))
+    output = task.compute(_state(t_now=1.0, dt=0.1))
 
-    assert single_output is not None
-    assert refined_output is not None
-    assert single_output.positions is not None
-    assert refined_output.positions is not None
-    assert np.allclose(refined_output.positions, single_output.positions)
+    assert output is not None
+    assert calls == [0.1]
+    assert output.positions is not None
+    assert np.allclose(output.positions, np.full(7, 0.01))
 
 
 def test_posture_reference_changes_observable_ik_output() -> None:
@@ -321,8 +278,6 @@ def test_posture_reference_rejects_unknown_joint_name() -> None:
         ("posture_gain", float("inf"), "posture_gain"),
         ("posture_gain", 1.1, "posture_gain"),
         ("gain", 1.1, "gain"),
-        ("amplify_factor", 0.0, "amplify_factor"),
-        ("num_solver_iterations", 0.0, "num_solver_iterations"),
         ("max_joint_delta_deg", float("inf"), "max_joint_delta_deg"),
         ("timeout", -1.0, "timeout"),
     ],
@@ -339,10 +294,6 @@ def test_invalid_numeric_config_is_rejected(field: str, value: float, match: str
             _task(posture_gain=value)
         elif field == "gain":
             _task(gain=value)
-        elif field == "amplify_factor":
-            _task(amplify_factor=value)
-        elif field == "num_solver_iterations":
-            _task(num_solver_iterations=int(value))
         elif field == "max_joint_delta_deg":
             _task(max_joint_delta_deg=value)
         elif field == "timeout":
@@ -588,8 +539,6 @@ def test_coordinator_passes_xarm7_pink_posture_config() -> None:
             model_path=XARM7_FK_MODEL,
             hand="right",
             pink_end_effector_frame="link7",
-            pink_num_solver_iterations=3,
-            pink_amplify_factor=1.5,
             pink_posture_cost=0.3,
             pink_posture_default_weight=0.25,
             pink_posture_joint_weights={"arm/joint2": 2.0},
@@ -600,8 +549,6 @@ def test_coordinator_passes_xarm7_pink_posture_config() -> None:
     )
 
     assert isinstance(task, XArm7IKTask)
-    assert task._config.num_solver_iterations == 3
-    assert task._config.amplify_factor == 1.5
     assert task._config.posture_cost == 0.3
     assert task._config.posture_default_weight == 0.25
     assert task._config.posture_joint_weights == {"arm/joint2": 2.0}
@@ -618,15 +565,11 @@ def test_coordinator_creates_openarm_bimanual_task_with_default_joints() -> None
             name="teleop_openarm",
             type="openarm_bimanual_pink_ik",
             model_path=OPENARM_V10_BIMANUAL_FK_MODEL,
-            pink_num_solver_iterations=3,
-            pink_amplify_factor=1.5,
         )
     )
 
     assert isinstance(task, OpenArmBimanualIKTask)
     assert task._config.joint_names == OPENARM_JOINTS
-    assert task._config.num_solver_iterations == 3
-    assert task._config.amplify_factor == 1.5
 
 
 def test_visualization_passes_xarm7_pink_posture_config() -> None:
@@ -634,8 +577,6 @@ def test_visualization_passes_xarm7_pink_posture_config() -> None:
         joint_names=XARM7_JOINTS,
         model_path=XARM7_FK_MODEL,
         posture_cost=0.3,
-        num_solver_iterations=3,
-        amplify_factor=1.5,
         posture_default_weight=0.25,
         posture_joint_weights={"arm/joint2": 2.0},
         posture_reference={"arm/joint3": 0.75},
@@ -643,8 +584,6 @@ def test_visualization_passes_xarm7_pink_posture_config() -> None:
         posture_gain=0.9,
     )
     try:
-        assert module._task._config.num_solver_iterations == 3
-        assert module._task._config.amplify_factor == 1.5
         assert module._task._config.posture_cost == 0.3
         assert module._task._config.posture_default_weight == 0.25
         assert module._task._config.posture_joint_weights == {"arm/joint2": 2.0}

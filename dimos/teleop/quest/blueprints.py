@@ -74,8 +74,6 @@ teleop_quest_xarm7_rerun = autoconnect(
         position_cost=8.0,
         orientation_cost=2.0,
         lm_damping=3.0,
-        num_solver_iterations=3,
-        amplify_factor=1.0,
         posture_cost=0.01,
         posture_lm_damping=1.0,
     ),
@@ -122,31 +120,19 @@ teleop_quest_openarm_rerun = autoconnect(
     vis_module("rerun"),
 ).transports(
     {
-        ("left_controller_output", PoseStamped): LCMTransport(
-            "/teleop/openarm/cartesian_command", PoseStamped
-        ),
-        ("right_controller_output", PoseStamped): LCMTransport(
-            "/teleop/openarm/cartesian_command", PoseStamped
-        ),
-        ("cartesian_command", PoseStamped): LCMTransport(
-            "/teleop/openarm/cartesian_command", PoseStamped
-        ),
+        ("left_controller_output", PoseStamped): LCMTransport("/teleop/openarm/cmd", PoseStamped),
+        ("right_controller_output", PoseStamped): LCMTransport("/teleop/openarm/cmd", PoseStamped),
+        ("cartesian_command", PoseStamped): LCMTransport("/teleop/openarm/cmd", PoseStamped),
         ("desired_controller_pose", PoseStamped): LCMTransport(
-            "/teleop/openarm/desired_controller_pose", PoseStamped
+            "/teleop/openarm/ctrl", PoseStamped
         ),
         ("desired_target_pose", PoseStamped): LCMTransport(
-            "/teleop/openarm/desired_target_pose", PoseStamped
+            "/teleop/openarm/tgt", PoseStamped
         ),
-        ("end_effector_pose", PoseStamped): LCMTransport(
-            "/teleop/openarm/end_effector_pose", PoseStamped
-        ),
+        ("end_effector_pose", PoseStamped): LCMTransport("/teleop/openarm/ee", PoseStamped),
         ("buttons", Buttons): LCMTransport("/teleop/buttons", Buttons),
-        ("desired_joint_state", JointState): LCMTransport(
-            "/teleop/openarm/desired_joint_state", JointState
-        ),
-        ("joint_state", JointState): LCMTransport(
-            "/teleop/openarm/desired_joint_state", JointState
-        ),
+        ("desired_joint_state", JointState): LCMTransport("/teleop/openarm/joints", JointState),
+        ("joint_state", JointState): LCMTransport("/teleop/openarm/joints", JointState),
     }
 )
 

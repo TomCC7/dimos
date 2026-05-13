@@ -49,8 +49,6 @@ class XArm7PinkIkDesiredStateConfig(ModuleConfig):
     end_effector_frame: str = "link7"
     solver: str | None = None
     damping: float = 1e-12
-    num_solver_iterations: int = 1
-    amplify_factor: float = 1.0
     position_cost: float = 1.0
     orientation_cost: float = 1.0
     lm_damping: float = 1.0
@@ -89,8 +87,6 @@ class XArm7PinkIkDesiredState(Module):
                 hand=self.config.hand,
                 solver=self.config.solver,
                 damping=self.config.damping,
-                num_solver_iterations=self.config.num_solver_iterations,
-                amplify_factor=self.config.amplify_factor,
                 end_effector_frame=self.config.end_effector_frame,
                 position_cost=self.config.position_cost,
                 orientation_cost=self.config.orientation_cost,
@@ -176,8 +172,6 @@ class OpenArmBimanualPinkIkDesiredStateConfig(ModuleConfig):
     right_end_effector_frame: str = "openarm_right_link7"
     solver: str | None = None
     damping: float = 1e-12
-    num_solver_iterations: int = 1
-    amplify_factor: float = 1.0
     position_cost: float = 1.0
     orientation_cost: float = 1.0
     lm_damping: float = 1.0
@@ -209,8 +203,6 @@ class OpenArmBimanualPinkIkDesiredState(Module):
                 max_joint_delta_deg=self.config.max_joint_delta_deg,
                 solver=self.config.solver,
                 damping=self.config.damping,
-                num_solver_iterations=self.config.num_solver_iterations,
-                amplify_factor=self.config.amplify_factor,
                 left_task_name=self.config.left_task_name,
                 right_task_name=self.config.right_task_name,
                 left_end_effector_frame=self.config.left_end_effector_frame,

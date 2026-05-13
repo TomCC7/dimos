@@ -154,8 +154,6 @@ class PinkIKTaskConfig:
     hand: Literal["left", "right"] | None = "right"
     solver: str | None = None
     damping: float = 1e-12
-    num_solver_iterations: int = 1
-    amplify_factor: float = 1.0
     end_effector_frame: str = ""
     position_cost: float = 1.0
     orientation_cost: float = 1.0
@@ -253,7 +251,7 @@ class BasePinkIKTask(BaseControlTask):
             return None
 
         dt = max(state.dt, 1e-9)
-        q_solution = self._solve_ik_refined(dt)
+        q_solution = self._solve_ik(dt)
         if q_solution is None:
             return None
 
@@ -286,39 +284,32 @@ class BasePinkIKTask(BaseControlTask):
             mode=ControlMode.SERVO_POSITION,
         )
 
-    def _solve_ik_refined(self, dt: float) -> NDArray[np.floating[Any]] | None:
-        q_solution: NDArray[np.floating[Any]] | None = None
-        solver_dt = dt / self._config.num_solver_iterations
-        integration_dt = solver_dt * self._config.amplify_factor
-        for _ in range(self._config.num_solver_iterations):
-            try:
-                velocity = solve_ik(
-                    self._configuration,
-                    self._pink_tasks,
-                    solver_dt,
-                    solver=self._solver,
-                    damping=self._config.damping,
-                )
-            except Exception as exc:
-                logger.warning(f"{type(self).__name__} {self._name}: Pink IK failed: {exc}")
-                return None
-
-            velocity_array = np.asarray(velocity, dtype=float)
-            if not np.isfinite(velocity_array).all():
-                logger.warning(
-                    f"{type(self).__name__} {self._name}: Pink IK returned non-finite velocity"
-                )
-                return None
-            q_solution = np.asarray(
-                self._configuration.integrate(velocity_array, integration_dt), dtype=float
+    def _solve_ik(self, dt: float) -> NDArray[np.floating[Any]] | None:
+        try:
+            velocity = solve_ik(
+                self._configuration,
+                self._pink_tasks,
+                dt,
+                solver=self._solver,
+                damping=self._config.damping,
             )
-            if not np.isfinite(q_solution).all():
-                logger.warning(
-                    f"{type(self).__name__} {self._name}: Pink IK returned non-finite output"
-                )
-                return None
-            self._configuration.update(q_solution)
+        except Exception as exc:
+            logger.warning(f"{type(self).__name__} {self._name}: Pink IK failed: {exc}")
+            return None
 
+        velocity_array = np.asarray(velocity, dtype=float)
+        if not np.isfinite(velocity_array).all():
+            logger.warning(
+                f"{type(self).__name__} {self._name}: Pink IK returned non-finite velocity"
+            )
+            return None
+        self._configuration.integrate_inplace(velocity_array, dt)
+        q_solution = np.asarray(self._configuration.q, dtype=float)
+        if not np.isfinite(q_solution).all():
+            logger.warning(
+                f"{type(self).__name__} {self._name}: Pink IK returned non-finite output"
+            )
+            return None
         return q_solution
 
     def on_gripper_trigger(self, value: float, _t_now: float = 0.0) -> bool:
@@ -582,11 +573,6 @@ class XArm7IKTask(SingleFramePinkIKTask):
 
     def _validate_numeric_config(self) -> None:
         _require_non_negative("damping", self._config.damping)
-        _require_finite("amplify_factor", self._config.amplify_factor)
-        if self._config.amplify_factor <= 0.0:
-            raise ValueError("amplify_factor must be positive")
-        if self._config.num_solver_iterations < 1:
-            raise ValueError("num_solver_iterations must be positive")
         _require_non_negative("position_cost", self._config.position_cost)
         _require_non_negative("orientation_cost", self._config.orientation_cost)
         _require_non_negative("lm_damping", self._config.lm_damping)
@@ -818,11 +804,6 @@ class OpenArmBimanualIKTask(BasePinkIKTask):
 
     def _validate_numeric_config(self) -> None:
         _require_non_negative("damping", self._config.damping)
-        _require_finite("amplify_factor", self._config.amplify_factor)
-        if self._config.amplify_factor <= 0.0:
-            raise ValueError("amplify_factor must be positive")
-        if self._config.num_solver_iterations < 1:
-            raise ValueError("num_solver_iterations must be positive")
         _require_non_negative("position_cost", self._config.position_cost)
         _require_non_negative("orientation_cost", self._config.orientation_cost)
         _require_non_negative("lm_damping", self._config.lm_damping)

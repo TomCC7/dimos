@@ -109,8 +109,6 @@ class TaskConfig:
     # Pink IK specific
     pink_solver: str | None = None
     pink_damping: float = 1e-12
-    pink_num_solver_iterations: int = 1
-    pink_amplify_factor: float = 1.0
     pink_end_effector_frame: str = ""
     pink_left_end_effector_frame: str = ""
     pink_right_end_effector_frame: str = ""
@@ -409,8 +407,6 @@ class ControlCoordinator(Module):
                     hand=cfg.hand,
                     solver=cfg.pink_solver,
                     damping=cfg.pink_damping,
-                    num_solver_iterations=cfg.pink_num_solver_iterations,
-                    amplify_factor=cfg.pink_amplify_factor,
                     end_effector_frame=cfg.pink_end_effector_frame or "link7",
                     position_cost=cfg.pink_position_cost,
                     orientation_cost=cfg.pink_orientation_cost,
@@ -453,8 +449,6 @@ class ControlCoordinator(Module):
                     max_joint_delta_deg=cfg.max_joint_delta_deg,
                     solver=cfg.pink_solver,
                     damping=cfg.pink_damping,
-                    num_solver_iterations=cfg.pink_num_solver_iterations,
-                    amplify_factor=cfg.pink_amplify_factor,
                     left_task_name=cfg.pink_left_task_name,
                     right_task_name=cfg.pink_right_task_name,
                     left_end_effector_frame=cfg.pink_left_end_effector_frame
