@@ -56,7 +56,7 @@ dependencies = [
     "scipy>=1.15.1",
     "pin>=3.3.0", # Pinocchio IK library
     "pin-pink>=4.2.0",
-    "qpsolvers>=4.12.0",
+    "qpsolvers[open-source-solvers]>=4.12.0",
     "daqp>=0.8.5",
     "reactivex",
     "sortedcontainers==2.4.0",
@@ -94,6 +94,7 @@ dependencies = [
     "rpyc>=6.0.0",
     "bleak>=3.0.2",
     "cryptography>=46.0.5",
+    "viser>=1.0.0",
 ]
 
 
