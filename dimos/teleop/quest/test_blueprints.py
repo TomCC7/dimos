@@ -140,6 +140,11 @@ def test_no_can_piper_teleop_uses_mock_and_manipulation_preview() -> None:
             ("piper_pink_ik", "teleop_piper"),
             ("trajectory", "traj_arm"),
         ]
+        piper_task = next(
+            task for task in _piper_task_configs(control_blueprints) if task.name == "teleop_piper"
+        )
+        assert piper_task.gripper_open_pos == 0.08
+        assert piper_task.gripper_closed_pos == 0.0
         assert (
             _piper_manipulation_robot_configs(quest_blueprints)[0].coordinator_task_name
             == "traj_arm"
