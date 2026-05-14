@@ -151,8 +151,7 @@ class BasePinkIKTask(BaseControlTask):
 
         q0 = pinocchio.neutral(self._model)
         self._configuration = pink.Configuration(self._model, self._data, q0)
-        self._frame_tasks = self._create_frame_tasks()
-        self._pink_tasks = [*self._frame_tasks, *self._create_extra_tasks()]
+        self._frame_tasks, self._pink_tasks = self._build_pink_tasks()
 
         self._lock = threading.Lock()
         self._active = False
@@ -314,10 +313,15 @@ class BasePinkIKTask(BaseControlTask):
                 f"does not match joint count ({len(self._joint_names_list)})"
             )
 
+    def _build_pink_tasks(self) -> tuple[list[FrameTask], list[Any]]:
+        frame_tasks = self._create_frame_tasks()
+        pink_tasks = [*frame_tasks, *self._create_auxiliary_tasks()]
+        return frame_tasks, pink_tasks
+
     def _create_frame_tasks(self) -> list[FrameTask]:
         raise NotImplementedError
 
-    def _create_extra_tasks(self) -> list[Any]:
+    def _create_auxiliary_tasks(self) -> list[Any]:
         return []
 
     def _update_extra_task_targets(self, _q_current: NDArray[np.floating[Any]]) -> bool:
@@ -506,7 +510,7 @@ class SingleArmPinkIKTask(SingleFramePinkIKTask):
             )
         ]
 
-    def _create_extra_tasks(self) -> list[Any]:
+    def _create_auxiliary_tasks(self) -> list[Any]:
         extra_tasks: list[Any] = []
 
         if self._config.posture_cost > 0.0:

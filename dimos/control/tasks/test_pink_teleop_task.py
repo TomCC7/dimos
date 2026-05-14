@@ -718,27 +718,17 @@ def test_coordinator_creates_xarm7_pink_task_with_task_local_defaults() -> None:
     assert any(isinstance(pink_task, DampingTask) for pink_task in task._pink_tasks)
 
 
-def test_coordinator_creates_openarm_bimanual_task_with_default_joints() -> None:
+def test_coordinator_rejects_removed_openarm_bimanual_pink_task_type() -> None:
     coordinator = ControlCoordinator.__new__(ControlCoordinator)
 
-    task = coordinator._create_task_from_config(
-        TaskConfig(
-            name="teleop_openarm",
-            type="openarm_bimanual_pink_ik",
-            model_path=OPENARM_V10_BIMANUAL_FK_MODEL,
+    with pytest.raises(ValueError, match="Unknown task type"):
+        coordinator._create_task_from_config(
+            TaskConfig(
+                name="teleop_openarm",
+                type="openarm_bimanual_pink_ik",
+                model_path=OPENARM_V10_BIMANUAL_FK_MODEL,
+            )
         )
-    )
-
-    assert isinstance(task, OpenArmBimanualIKTask)
-    assert task._config.joint_names == OPENARM_JOINTS
-    assert task.target_task_names == ("teleop_openarm_left", "teleop_openarm_right")
-    assert task._config.left_end_effector_frame == "openarm_left_link7"
-    assert task._config.right_end_effector_frame == "openarm_right_link7"
-    assert task._config.damping == 1e-12
-    assert task._config.position_cost == 1.0
-    assert task._config.orientation_cost == 1.0
-    assert task._config.lm_damping == 1.0
-    assert task._config.gain == 1.0
 
 
 def test_xarm7_pink_task_requests_cartesian_and_button_subscriptions() -> None:

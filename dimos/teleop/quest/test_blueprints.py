@@ -137,7 +137,7 @@ def test_no_can_piper_teleop_uses_mock_and_manipulation_preview() -> None:
         assert _piper_adapter_type(control_blueprints) == "mock"
         assert "ManipulationModule" in _module_names(quest_blueprints.teleop_quest_piper)
         assert [(task.type, task.name) for task in _piper_task_configs(control_blueprints)] == [
-            ("piper_pink_ik", "teleop_piper"),
+            ("single_arm_pink_ik", "teleop_piper"),
             ("trajectory", "traj_arm"),
         ]
         piper_task = next(
@@ -181,7 +181,7 @@ def test_piper_data_collection_blueprint_routes_recorded_streams() -> None:
         )
         assert (
             quest_blueprints.teleop_quest_piper_data_collection.transport_map[
-                ("left_controller_output", PoseStamped)
+                ("right_controller_output", PoseStamped)
             ].topic.topic
             == "/coordinator/cartesian_command"
         )
@@ -199,6 +199,36 @@ def test_piper_data_collection_blueprint_routes_recorded_streams() -> None:
         )
 
 
+def test_piper_data_collection_blueprint_includes_rerun_vis_sink() -> None:
+    """Data collection blueprint exposes the recorded streams to a Rerun vis sink.
+
+    Verifies the blueprint contains a RerunBridgeModule atom in addition to the
+    existing recording stack, and that the topics for the pre-existing
+    transport_map entries are unchanged (visualization is a passive sink).
+    """
+    with _teleop_blueprints(simulation=False, xarm7_ip="192.168.1.10", can_port=None) as (
+        _control_blueprints,
+        quest_blueprints,
+    ):
+        bp = quest_blueprints.teleop_quest_piper_data_collection
+        names = _module_names(bp)
+        assert "RerunBridgeModule" in names, names
+        # The recording stack must still be there alongside the new vis sink.
+        for required in ("CameraModule", "PiperDataRecorder", "ControlCoordinator"):
+            assert required in names, (required, names)
+
+        # Topics for the pre-existing transport_map entries are unchanged.
+        expected_topics = {
+            ("joint_state", JointState): "/coordinator/joint_state",
+            ("desired_joint_action", JointState): "/coordinator/desired_joint_action",
+            ("right_controller_output", PoseStamped): "/coordinator/cartesian_command",
+            ("buttons", Buttons): "/teleop/buttons",
+            ("color_image", Image): "/piper_data_collection/color_image",
+        }
+        for key, topic in expected_topics.items():
+            assert bp.transport_map[key].topic.topic == topic, key
+
+
 def test_real_can_piper_teleop_uses_hardware_with_manipulation_preview() -> None:
     with _teleop_blueprints(simulation=False, xarm7_ip="192.168.1.10", can_port="can0") as (
         control_blueprints,
@@ -209,7 +239,7 @@ def test_real_can_piper_teleop_uses_hardware_with_manipulation_preview() -> None
         assert "ManipulationModule" in _module_names(quest_blueprints.teleop_quest_piper)
 
 
-def test_simulation_piper_teleop_uses_mujoco_without_manipulation_preview() -> None:
+def test_simulation_piper_teleop_uses_mujoco_with_manipulation_preview() -> None:
     with _teleop_blueprints(simulation=True, xarm7_ip="192.168.1.10", can_port=None) as (
         control_blueprints,
         quest_blueprints,
@@ -217,7 +247,7 @@ def test_simulation_piper_teleop_uses_mujoco_without_manipulation_preview() -> N
         assert control_blueprints.is_piper_mock_preview is False
         assert _piper_adapter_type(control_blueprints) == "sim_mujoco"
         assert "MujocoSimModule" in _module_names(control_blueprints.coordinator_teleop_piper)
-        assert "ManipulationModule" not in _module_names(quest_blueprints.teleop_quest_piper)
+        assert "ManipulationModule" in _module_names(quest_blueprints.teleop_quest_piper)
 
 
 def test_real_ip_xarm7_teleop_uses_hardware_without_manipulation_preview() -> None:

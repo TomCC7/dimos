@@ -43,17 +43,17 @@ from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.robot.catalog.piper import (
     PIPER_ARM_FK_MODEL,
-    PIPER_FK_MODEL,
     PIPER_SIM_PATH,
     piper as _catalog_piper,
+    piper_single_arm_pink_task_config,
 )
 from dimos.robot.catalog.ufactory import (
     XARM6_FK_MODEL,
     XARM6_SIM_PATH,
-    XARM7_FK_MODEL,
     XARM7_SIM_PATH,
     xarm6 as _catalog_xarm6,
     xarm7 as _catalog_xarm7,
+    xarm7_single_arm_pink_task_config,
 )
 from dimos.simulation.engines.mujoco_sim_module import MujocoSimModule
 from dimos.teleop.quest.quest_types import Buttons
@@ -197,15 +197,7 @@ coordinator_teleop_xarm7 = autoconnect(
     ControlCoordinator.blueprint(
         hardware=[_xarm7_teleop_cfg.to_hardware_component()],
         tasks=[
-            _xarm7_teleop_cfg.to_task_config(
-                task_type="xarm7_pink_ik",
-                task_name="teleop_xarm",
-                model_path=XARM7_FK_MODEL,
-                hand="right",
-                gripper_joint=make_gripper_joints("arm")[0],
-                gripper_open_pos=0.85,
-                gripper_closed_pos=0.0,
-            ),
+            xarm7_single_arm_pink_task_config(_xarm7_teleop_cfg, hand="right"),
         ],
     ),
     *_xarm7_sim_modules(),
@@ -256,15 +248,7 @@ coordinator_teleop_piper = autoconnect(
     ControlCoordinator.blueprint(
         hardware=[_piper_teleop_cfg.to_hardware_component()],
         tasks=[
-            _piper_teleop_cfg.to_task_config(
-                task_type="piper_pink_ik",
-                task_name="teleop_piper",
-                model_path=PIPER_FK_MODEL,
-                hand="right",
-                gripper_joint=make_gripper_joints("arm")[0],
-                gripper_open_pos=0.08,
-                gripper_closed_pos=0.0,
-            ),
+            piper_single_arm_pink_task_config(_piper_teleop_cfg, hand="right"),
             _piper_teleop_cfg.to_task_config(task_name="traj_arm"),
         ],
     ),

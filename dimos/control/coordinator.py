@@ -74,14 +74,12 @@ CARTESIAN_TARGET_TASK_TYPES = (
     "single_arm_pink_ik",
     "piper_pink_ik",
     "xarm7_pink_ik",
-    "openarm_bimanual_pink_ik",
 )
 TELEOP_BUTTON_TASK_TYPES = (
     "teleop_ik",
     "single_arm_pink_ik",
     "piper_pink_ik",
     "xarm7_pink_ik",
-    "openarm_bimanual_pink_ik",
 )
 
 
@@ -385,111 +383,90 @@ class ControlCoordinator(Module):
                 ),
             )
 
-        elif task_type == "single_arm_pink_ik":
+        elif task_type in ("single_arm_pink_ik", "piper_pink_ik", "xarm7_pink_ik"):
             from dimos.control.tasks.pink_teleop_task import (
+                PiperPinkIKTask,
+                PiperPinkIKTaskConfig,
                 SingleArmPinkIKTask,
                 SingleArmPinkIKTaskConfig,
+                XArm7IKTask,
+                XArm7IKTaskConfig,
             )
 
-            if cfg.model_path is None:
-                raise ValueError(
-                    f"SingleArmPinkIKTask '{cfg.name}' requires model_path in TaskConfig"
+            def _single_arm_builder(config: TaskConfig) -> ControlTask:
+                if config.model_path is None:
+                    raise ValueError(
+                        f"SingleArmPinkIKTask '{config.name}' requires model_path in TaskConfig"
+                    )
+                if not config.end_effector_frame:
+                    raise ValueError(
+                        f"SingleArmPinkIKTask '{config.name}' requires end_effector_frame in TaskConfig"
+                    )
+                return SingleArmPinkIKTask(
+                    config.name,
+                    SingleArmPinkIKTaskConfig(
+                        joint_names=config.joint_names,
+                        model_path=config.model_path,
+                        end_effector_frame=config.end_effector_frame,
+                        priority=config.priority,
+                        timeout=config.timeout,
+                        max_joint_delta_deg=config.max_joint_delta_deg,
+                        hand=config.hand,
+                        gripper_joint=config.gripper_joint,
+                        gripper_open_pos=config.gripper_open_pos,
+                        gripper_closed_pos=config.gripper_closed_pos,
+                    ),
                 )
-            if not cfg.end_effector_frame:
-                raise ValueError(
-                    f"SingleArmPinkIKTask '{cfg.name}' requires end_effector_frame in TaskConfig"
+
+            def _piper_builder(config: TaskConfig) -> ControlTask:
+                model_path = config.model_path
+                if model_path is None:
+                    from dimos.robot.catalog.piper import PIPER_FK_MODEL
+
+                    model_path = PIPER_FK_MODEL
+                return PiperPinkIKTask(
+                    config.name,
+                    PiperPinkIKTaskConfig(
+                        joint_names=config.joint_names,
+                        model_path=model_path,
+                        priority=config.priority,
+                        timeout=config.timeout,
+                        max_joint_delta_deg=config.max_joint_delta_deg,
+                        hand=config.hand,
+                        gripper_joint=config.gripper_joint,
+                        gripper_open_pos=config.gripper_open_pos,
+                        gripper_closed_pos=config.gripper_closed_pos,
+                    ),
                 )
 
-            return SingleArmPinkIKTask(
-                cfg.name,
-                SingleArmPinkIKTaskConfig(
-                    joint_names=cfg.joint_names,
-                    model_path=cfg.model_path,
-                    end_effector_frame=cfg.end_effector_frame,
-                    priority=cfg.priority,
-                    timeout=cfg.timeout,
-                    max_joint_delta_deg=cfg.max_joint_delta_deg,
-                    hand=cfg.hand,
-                    gripper_joint=cfg.gripper_joint,
-                    gripper_open_pos=cfg.gripper_open_pos,
-                    gripper_closed_pos=cfg.gripper_closed_pos,
-                ),
-            )
+            def _xarm7_builder(config: TaskConfig) -> ControlTask:
+                model_path = config.model_path
+                if model_path is None:
+                    from dimos.robot.catalog.ufactory import XARM7_FK_MODEL
 
-        elif task_type == "piper_pink_ik":
-            from dimos.control.tasks.pink_teleop_task import PiperPinkIKTask, PiperPinkIKTaskConfig
+                    model_path = XARM7_FK_MODEL
+                return XArm7IKTask(
+                    config.name,
+                    XArm7IKTaskConfig(
+                        joint_names=config.joint_names,
+                        model_path=model_path,
+                        priority=config.priority,
+                        timeout=config.timeout,
+                        max_joint_delta_deg=config.max_joint_delta_deg,
+                        hand=config.hand,
+                        gripper_joint=config.gripper_joint,
+                        gripper_open_pos=config.gripper_open_pos,
+                        gripper_closed_pos=config.gripper_closed_pos,
+                    ),
+                )
 
-            model_path = cfg.model_path
-            if model_path is None:
-                from dimos.robot.catalog.piper import PIPER_FK_MODEL
+            pink_task_registry: dict[str, Any] = {
+                "single_arm_pink_ik": _single_arm_builder,
+                "piper_pink_ik": _piper_builder,
+                "xarm7_pink_ik": _xarm7_builder,
+            }
 
-                model_path = PIPER_FK_MODEL
-
-            return PiperPinkIKTask(
-                cfg.name,
-                PiperPinkIKTaskConfig(
-                    joint_names=cfg.joint_names,
-                    model_path=model_path,
-                    priority=cfg.priority,
-                    timeout=cfg.timeout,
-                    max_joint_delta_deg=cfg.max_joint_delta_deg,
-                    hand=cfg.hand,
-                    gripper_joint=cfg.gripper_joint,
-                    gripper_open_pos=cfg.gripper_open_pos,
-                    gripper_closed_pos=cfg.gripper_closed_pos,
-                ),
-            )
-
-        elif task_type == "xarm7_pink_ik":
-            from dimos.control.tasks.pink_teleop_task import XArm7IKTask, XArm7IKTaskConfig
-
-            model_path = cfg.model_path
-            if model_path is None:
-                from dimos.robot.catalog.ufactory import XARM7_FK_MODEL
-
-                model_path = XARM7_FK_MODEL
-
-            return XArm7IKTask(
-                cfg.name,
-                XArm7IKTaskConfig(
-                    joint_names=cfg.joint_names,
-                    model_path=model_path,
-                    priority=cfg.priority,
-                    timeout=cfg.timeout,
-                    max_joint_delta_deg=cfg.max_joint_delta_deg,
-                    hand=cfg.hand,
-                    gripper_joint=cfg.gripper_joint,
-                    gripper_open_pos=cfg.gripper_open_pos,
-                    gripper_closed_pos=cfg.gripper_closed_pos,
-                ),
-            )
-
-        elif task_type == "openarm_bimanual_pink_ik":
-            from dimos.control.tasks.pink_teleop_task import (
-                OpenArmBimanualIKTask,
-                OpenArmBimanualIKTaskConfig,
-            )
-
-            model_path = cfg.model_path
-            if model_path is None:
-                from dimos.robot.catalog.openarm import OPENARM_V10_BIMANUAL_FK_MODEL
-
-                model_path = OPENARM_V10_BIMANUAL_FK_MODEL
-
-            task_config_kwargs: dict[str, Any] = {}
-            if cfg.joint_names:
-                task_config_kwargs["joint_names"] = cfg.joint_names
-
-            return OpenArmBimanualIKTask(
-                cfg.name,
-                OpenArmBimanualIKTaskConfig(
-                    model_path=model_path,
-                    priority=cfg.priority,
-                    timeout=cfg.timeout,
-                    max_joint_delta_deg=cfg.max_joint_delta_deg,
-                    **task_config_kwargs,
-                ),
-            )
+            return pink_task_registry[task_type](cfg)
 
         else:
             raise ValueError(f"Unknown task type: {task_type}")

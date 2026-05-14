@@ -37,6 +37,7 @@ from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.teleop.quest.data_collection import PiperDataRecorder
+from dimos.teleop.quest.data_collection_vis import piper_data_collection_rerun_config
 from dimos.teleop.quest.quest_extensions import ArmTeleopModule
 from dimos.teleop.quest.quest_types import Buttons
 from dimos.visualization.vis_module import vis_module
@@ -100,7 +101,9 @@ teleop_quest_piper = autoconnect(
 )
 
 # Piper teleop data collection: right controller -> piper arm, with USB camera
-# observation plus measured state/action recording.
+# observation plus measured state/action recording. A Rerun vis sink plots the
+# camera + per-joint measured/commanded scalars so the operator can verify
+# capture live; visualization is a passive sink and does not alter recording.
 teleop_quest_piper_data_collection = autoconnect(
     ArmTeleopModule.blueprint(task_names={"right": "teleop_piper"}),
     coordinator_teleop_piper,
@@ -110,6 +113,7 @@ teleop_quest_piper_data_collection = autoconnect(
         robots=[piper_teleop_robot_model_config()],
         enable_viz=True,
     ),
+    vis_module("rerun", rerun_config=piper_data_collection_rerun_config()),
 ).transports(
     {
         ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),

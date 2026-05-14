@@ -4,34 +4,26 @@
 TBD - created by archiving change support-piper-pink-teleop. Update Purpose after archive.
 ## Requirements
 ### Requirement: Shared single-arm Pink teleop task is configurable by robot
-The system SHALL provide a shared Pink-backed teleop IK task for one manipulator arm and one end-effector frame, with robot-specific behavior selected by explicit configuration rather than by XArm-only implementation details.
+The system SHALL provide a shared Pink-backed teleop IK task for one manipulator arm and one end-effector frame, with robot-specific behavior selected by explicit task/config subclasses and registry-based construction rather than coordinator `if/elif` robot branches.
 
-#### Scenario: Robot-specific model and frame are configured
+#### Scenario: Robot-specific model and frame are configured by task config
 - **WHEN** a single-arm Pink teleop task is created for a robot
-- **THEN** the task SHALL load the configured URDF or MJCF model path, validate the configured controlled joint names against the model DOF, and fail startup if the configured end-effector frame is not present in the model
+- **THEN** the task SHALL load the configured URDF or MJCF model path, validate configured controlled joint names against model DOF, and fail startup if the configured end-effector frame is absent
 
-#### Scenario: Solver and objective settings are configured
-- **WHEN** a single-arm Pink teleop task solves a teleop tick
-- **THEN** the task SHALL use the configured solver, Pink damping, frame position cost, frame orientation cost, frame LM damping, frame gain, posture objective settings, and damping-task cost to build and solve the Pink IK problem
-
-#### Scenario: Safety settings are configured
-- **WHEN** a single-arm Pink teleop task computes from coordinator state
-- **THEN** the task SHALL enforce the configured target timeout and maximum per-tick joint delta before returning any joint command
+#### Scenario: New robot config avoids coordinator branch additions
+- **WHEN** a new single-arm Pink task/config subclass is introduced and registered
+- **THEN** creating that task SHALL NOT require adding a new robot-specific `if/elif` branch in coordinator task construction
 
 ### Requirement: Shared single-arm Pink teleop preserves Quest delta control
-The system SHALL interpret Quest controller poses for the shared single-arm Pink teleop task as robot-frame deltas from controller engagement, matching the existing XArm7 Pink teleop contract.
+The system SHALL interpret Quest controller poses for the shared single-arm Pink teleop task as robot-frame deltas from controller engagement, matching existing XArm7/Piper control behavior.
 
 #### Scenario: Controller engage captures robot baseline
 - **WHEN** the configured controller hand engages and current joint state is available
-- **THEN** the task SHALL capture the current configured end-effector pose as the baseline for subsequent controller deltas
+- **THEN** the task SHALL capture the current configured end-effector pose as baseline for subsequent controller deltas
 
-#### Scenario: Controller delta updates frame target
+#### Scenario: Controller delta updates frame target through unified task binding
 - **WHEN** an engaged controller publishes a routed `PoseStamped` delta
-- **THEN** the task SHALL apply that delta to the captured end-effector baseline and update the Pink frame task target for the configured end-effector frame
-
-#### Scenario: Controller release clears baseline
-- **WHEN** the configured controller hand disengages
-- **THEN** the task SHALL deactivate teleop output and clear the captured end-effector baseline before the next engagement
+- **THEN** the task SHALL apply that delta to the captured baseline and bind the result into the active Pink task set through one composition flow that includes both frame and auxiliary tasks
 
 ### Requirement: Piper Quest teleop uses Pink IK
 The `teleop_quest_piper` blueprint SHALL drive Piper through the shared single-arm Pink teleop task while preserving the existing Quest and coordinator transport surface.
