@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import re
+from typing import Literal, TypeAlias
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -24,6 +25,8 @@ from dimos.visualization.rerun.constants import (
     RerunOpenOption,
     ViewerBackend,
 )
+
+SimulationBackend: TypeAlias = Literal["mujoco"]
 
 
 def _get_all_numbers(s: str) -> list[float]:
@@ -37,6 +40,7 @@ class GlobalConfig(BaseSettings):
     xarm6_ip: str | None = None
     can_port: str | None = None
     simulation: bool = False
+    simulation_backend: SimulationBackend = "mujoco"
     replay: bool = False
     replay_db: str = "go2_short"
     new_memory: bool = False
@@ -54,9 +58,6 @@ class GlobalConfig(BaseSettings):
     mujoco_global_map_from_pointcloud: str | None = None
     mujoco_start_pos: str = "-1.0, 1.0"
     mujoco_steps_per_frame: int = 7
-    viser_port: int = 8080
-    viser_label: str = "DimOS Viser Simulation"
-    viser_verbose: bool = False
     robot_model: str | None = None
     robot_width: float = 0.3
     robot_rotation_diameter: float = 0.6

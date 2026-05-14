@@ -94,7 +94,6 @@ dependencies = [
     "rpyc>=6.0.0",
     "bleak>=3.0.2",
     "cryptography>=46.0.5",
-    "viser>=1.0.0",
 ]
 
 
@@ -233,7 +232,6 @@ manipulation = [
     "matplotlib>=3.7.1",
     "pyyaml>=6.0",
 ]
-
 
 cpu = [
     # CPU inference backends

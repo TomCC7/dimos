@@ -84,3 +84,5 @@ recording*.db
 
 # oh-my-openagent
 .sisyphus
+
+.playwright-mcp

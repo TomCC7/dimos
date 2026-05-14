@@ -14,8 +14,8 @@
 
 """Deprecated Rerun URDF robot visualization helpers and modules.
 
-Use ``dimos.simulation.engines.viser_urdf_sim_module`` for new desired-state
-URDF robot visualization.
+Use ``ManipulationModule(enable_viz=True)`` for no-hardware arm teleop
+preview visualization.
 """
 
 from __future__ import annotations
@@ -74,7 +74,8 @@ def normalize_joint_name(joint_name: str) -> str:
 class RerunUrdfRobotVisualizer(Module):
     """Deprecated: load a URDF in Rerun and update joints from ``JointState``.
 
-    New desired-state robot visualization should use ``ViserUrdfSimModule``.
+    New no-hardware arm teleop visualization should use
+    ``ManipulationModule(enable_viz=True)``.
     """
 
     config: RerunUrdfRobotVisualizerConfig
@@ -99,8 +100,8 @@ class RerunUrdfRobotVisualizer(Module):
     @rpc
     def start(self) -> None:
         warnings.warn(
-            "RerunUrdfRobotVisualizer is deprecated; use ViserUrdfSimModule for "
-            "desired-state URDF robot visualization.",
+            "RerunUrdfRobotVisualizer is deprecated; use "
+            "ManipulationModule(enable_viz=True) for no-hardware arm teleop visualization.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -148,10 +149,15 @@ class RerunUrdfRobotVisualizer(Module):
             connect_url = f"rerun+http://{self.config.g.listen_host}:{RERUN_GRPC_PORT}/proxy"
         rerun_init(
             start_grpc=True,
-            grpc_config={"connect_url": connect_url, "server_memory_limit": self.config.memory_limit},
+            grpc_config={
+                "connect_url": connect_url,
+                "server_memory_limit": self.config.memory_limit,
+            },
         )
         rerun_path = self._write_rerun_loadable_urdf(path)
-        rr.log_file_from_path(rerun_path, entity_path_prefix=self.config.entity_path_prefix, static=True)
+        rr.log_file_from_path(
+            rerun_path, entity_path_prefix=self.config.entity_path_prefix, static=True
+        )
 
         import rerun.urdf as rr_urdf
 
@@ -247,7 +253,12 @@ class RerunUrdfRobotVisualizer(Module):
         rr.log(entity_path, rr.TransformAxes3D(self.config.debug_pose_axis_length))
         rr.log(
             f"{entity_path}/marker",
-            rr.Points3D([[0.0, 0.0, 0.0]], radii=[0.025], colors=[color], labels=[entity_path.rsplit('/', 1)[-1]]),
+            rr.Points3D(
+                [[0.0, 0.0, 0.0]],
+                radii=[0.025],
+                colors=[color],
+                labels=[entity_path.rsplit("/", 1)[-1]],
+            ),
         )
 
     @property

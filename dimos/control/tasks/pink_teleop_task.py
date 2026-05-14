@@ -42,6 +42,7 @@ from dimos.control.task import (
 from dimos.manipulation.planning.kinematics.pinocchio_ik import check_joint_delta, pose_to_se3
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.robot.catalog.openarm import OPENARM_V10_BIMANUAL_FK_MODEL
+from dimos.robot.catalog.piper import PIPER_FK_MODEL
 from dimos.robot.catalog.ufactory import XARM7_FK_MODEL
 from dimos.utils.logging_config import setup_logger
 
@@ -122,6 +123,13 @@ class PinkIKTaskConfig:
     posture_gain: float = 1.0
 
 
+@dataclass
+class SingleArmPinkIKTaskConfig(PinkIKTaskConfig):
+    """Configuration for one-arm, one-frame Pink teleop IK tasks."""
+
+    damping_task_cost: float = 0.0
+
+
 class BasePinkIKTask(BaseControlTask):
     """Base control task for Pink-backed teleoperation IK."""
 
@@ -137,7 +145,7 @@ class BasePinkIKTask(BaseControlTask):
         self._joint_names_list = list(config.joint_names)
         self._solver = config.solver or _default_solver()
 
-        self._model = _load_pinocchio_model(config.model_path)
+        self._model = self._prepare_model(_load_pinocchio_model(config.model_path))
         self._data = self._model.createData()
         self._validate_model()
 
@@ -296,6 +304,9 @@ class BasePinkIKTask(BaseControlTask):
             positions.append(position)
         return np.array(positions, dtype=float)
 
+    def _prepare_model(self, model: pinocchio.Model) -> pinocchio.Model:
+        return model
+
     def _validate_model(self) -> None:
         if self._model.nq != len(self._joint_names_list):
             raise ValueError(
@@ -440,38 +451,46 @@ class SingleFramePinkIKTask(BasePinkIKTask):
         self._initial_ee_pose = None
 
 
-@dataclass
-class XArm7IKTaskConfig(PinkIKTaskConfig):
-    """XArm7-specific Pink teleop IK configuration."""
+class SingleArmPinkIKTask(SingleFramePinkIKTask):
+    """Configurable Pink teleop IK task for one arm and one end-effector frame."""
 
-    model_path: str | Path = XARM7_FK_MODEL
-    end_effector_frame: str = "link7"
-    hand: Literal["left", "right"] | None = "right"
-    posture_cost: float = 1e-2
-    damping_task_cost: float = 0.0
+    _config: SingleArmPinkIKTaskConfig
 
-
-class XArm7IKTask(SingleFramePinkIKTask):
-    """Pink teleop IK task for the existing right-controller XArm7 route."""
-
-    _config: XArm7IKTaskConfig
-
-    def __init__(self, name: str, config: XArm7IKTaskConfig) -> None:
+    def __init__(self, name: str, config: SingleArmPinkIKTaskConfig) -> None:
         self._posture_task: PostureTask | None = None
         super().__init__(name, config)
 
+    def _prepare_model(self, model: pinocchio.Model) -> pinocchio.Model:
+        configured = [_unqualified_joint_name(name) for name in self._joint_names_list]
+        model_joints = _model_joint_names(model)
+        if model_joints == configured:
+            return model
+        if any(joint_name not in model_joints for joint_name in configured):
+            return model
+
+        locked_joint_ids = [
+            model.getJointId(joint_name)
+            for joint_name in model_joints
+            if joint_name not in configured
+        ]
+        if not locked_joint_ids:
+            return model
+
+        return pinocchio.buildReducedModel(model, locked_joint_ids, pinocchio.neutral(model))
+
     def _validate_model(self) -> None:
-        super()._validate_model()
         configured = [_unqualified_joint_name(name) for name in self._joint_names_list]
         model_joints = _model_joint_names(self._model)
         if configured != model_joints:
             raise ValueError(
-                f"XArm7IKTask '{self._name}' joint names {configured} do not match "
+                f"{type(self).__name__} '{self._name}' joint names {configured} do not match "
                 f"model joints {model_joints}"
             )
+        super()._validate_model()
         if not self._model.existFrame(self._config.end_effector_frame):
             raise ValueError(
-                f"XArm7IKTask '{self._name}' model has no frame '{self._config.end_effector_frame}'"
+                f"{type(self).__name__} '{self._name}' model has no frame "
+                f"'{self._config.end_effector_frame}'"
             )
         self._validate_numeric_config()
         self._validate_posture_config()
@@ -562,10 +581,44 @@ class XArm7IKTask(SingleFramePinkIKTask):
         )
         if joint_name not in names:
             raise ValueError(
-                f"XArm7IKTask '{self._name}' posture joint '{joint_name}' is not in "
+                f"{type(self).__name__} '{self._name}' posture joint '{joint_name}' is not in "
                 f"configured joints {self._joint_names_list}"
             )
         return names[joint_name]
+
+
+@dataclass
+class XArm7IKTaskConfig(SingleArmPinkIKTaskConfig):
+    """XArm7-specific Pink teleop IK configuration."""
+
+    model_path: str | Path = XARM7_FK_MODEL
+    end_effector_frame: str = "link7"
+    hand: Literal["left", "right"] | None = "right"
+    posture_cost: float = 1e-3
+    damping_task_cost: float = 1e-3
+
+
+class XArm7IKTask(SingleArmPinkIKTask):
+    """Pink teleop IK task for the existing right-controller XArm7 route."""
+
+    _config: XArm7IKTaskConfig
+
+
+@dataclass
+class PiperPinkIKTaskConfig(SingleArmPinkIKTaskConfig):
+    """Piper-specific Pink teleop IK configuration."""
+
+    model_path: str | Path = PIPER_FK_MODEL
+    end_effector_frame: str = "gripper_base"
+    hand: Literal["left", "right"] | None = "right"
+    damping_task_cost: float = 1e-3
+    posture_cost: float = 1e-3
+
+
+class PiperPinkIKTask(SingleArmPinkIKTask):
+    """Pink teleop IK task for the existing right-controller Piper route."""
+
+    _config: PiperPinkIKTaskConfig
 
 
 @dataclass

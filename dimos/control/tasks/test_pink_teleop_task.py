@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 from pink.tasks import DampingTask, FrameTask, PostureTask
 import pytest
@@ -27,15 +29,20 @@ from dimos.control.tasks.pink_teleop_task import (
     BasePinkIKTask,
     OpenArmBimanualIKTask,
     OpenArmBimanualIKTaskConfig,
+    PiperPinkIKTask,
+    PiperPinkIKTaskConfig,
+    SingleArmPinkIKTask,
     SingleFramePinkIKTask,
     XArm7IKTask,
     XArm7IKTaskConfig,
 )
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.robot.catalog.openarm import OPENARM_V10_BIMANUAL_FK_MODEL
+from dimos.robot.catalog.piper import PIPER_FK_MODEL
 from dimos.robot.catalog.ufactory import XARM7_FK_MODEL
 
 XARM7_JOINTS = [f"arm/joint{i}" for i in range(1, 8)]
+PIPER_JOINTS = [f"arm/joint{i}" for i in range(1, 7)]
 OPENARM_JOINTS = [
     *[f"openarm_left_joint{i}" for i in range(1, 8)],
     *[f"openarm_right_joint{i}" for i in range(1, 8)],
@@ -76,6 +83,18 @@ def _task(
         damping_task_cost=damping_task_cost,
     )
     return XArm7IKTask("teleop_xarm", config)
+
+
+def _piper_task(**overrides: Any) -> SingleArmPinkIKTask:
+    kwargs: dict[str, Any] = {
+        "joint_names": PIPER_JOINTS,
+        "model_path": PIPER_FK_MODEL,
+        "end_effector_frame": "gripper_base",
+        "hand": "left",
+    }
+    kwargs.update(overrides)
+    config = PiperPinkIKTaskConfig(**kwargs)
+    return PiperPinkIKTask("teleop_piper", config)
 
 
 def test_missing_joint_state_returns_no_command() -> None:
@@ -439,6 +458,53 @@ def test_xarm7_construction_rejects_missing_end_effector_frame() -> None:
         )
 
 
+def test_single_arm_pink_task_constructs_configurable_piper_frame_task() -> None:
+    task = _piper_task()
+
+    assert task._config.model_path == PIPER_FK_MODEL
+    assert task._config.end_effector_frame == "gripper_base"
+    assert task._config.hand == "left"
+    assert task._model.nq == len(PIPER_JOINTS)
+    assert task._model.existFrame("gripper_base")
+    assert [str(frame_task.frame) for frame_task in task._frame_tasks] == ["gripper_base"]
+    assert isinstance(task._frame_tasks[0], FrameTask)
+
+
+def test_single_arm_pink_task_rejects_piper_mismatched_joint_names() -> None:
+    with pytest.raises(ValueError, match="joint names"):
+        _piper_task(joint_names=[f"arm/bad{i}" for i in range(1, 7)])
+
+
+def test_single_arm_pink_task_rejects_missing_piper_end_effector_frame() -> None:
+    with pytest.raises(ValueError, match="no frame"):
+        _piper_task(end_effector_frame="missing_frame")
+
+
+def test_single_arm_pink_task_claims_piper_arm_and_gripper() -> None:
+    task = _piper_task(
+        gripper_joint="arm/gripper",
+        gripper_open_pos=0.0,
+        gripper_closed_pos=0.035,
+    )
+
+    claim = task.claim()
+    assert claim.mode == ControlMode.SERVO_POSITION
+    assert claim.joints == frozenset([*PIPER_JOINTS, "arm/gripper"])
+
+    assert task.on_gripper_trigger(1.0)
+    task.on_cartesian_command(PoseStamped(frame_id="teleop_piper"), t_now=1.0)
+    output = task.compute(
+        CoordinatorState(
+            joints=JointStateSnapshot(joint_positions={name: 0.0 for name in PIPER_JOINTS}),
+            t_now=1.0,
+            dt=0.01,
+        )
+    )
+    assert output is not None
+    assert output.joint_names[-1] == "arm/gripper"
+    assert output.positions[-1] == 0.035
+
+
 def test_openarm_bimanual_task_accepts_left_and_right_target_slots() -> None:
     task = OpenArmBimanualIKTask(
         "teleop_openarm",
@@ -583,6 +649,47 @@ def test_coordinator_creates_xarm7_pink_task_with_teleop_route_key() -> None:
     assert task._config.end_effector_frame == "link7"
 
 
+def test_coordinator_creates_single_arm_pink_task_for_piper() -> None:
+    coordinator = ControlCoordinator.__new__(ControlCoordinator)
+
+    task = coordinator._create_task_from_config(
+        TaskConfig(
+            name="teleop_piper",
+            type="piper_pink_ik",
+            joint_names=PIPER_JOINTS,
+            model_path=PIPER_FK_MODEL,
+            hand="right",
+            gripper_joint="arm/gripper",
+            gripper_open_pos=0.0,
+            gripper_closed_pos=0.035,
+        )
+    )
+
+    assert isinstance(task, PiperPinkIKTask)
+    assert task.name == "teleop_piper"
+    assert task._config.end_effector_frame == "gripper_base"
+    assert task._config.hand == "right"
+    assert task._config.damping_task_cost == 1e-3
+    assert task.claim().joints == frozenset([*PIPER_JOINTS, "arm/gripper"])
+
+
+def test_coordinator_requires_end_effector_frame_for_single_arm_pink_task() -> None:
+    coordinator = ControlCoordinator.__new__(ControlCoordinator)
+
+    for end_effector_frame in (None, ""):
+        with pytest.raises(ValueError, match="end_effector_frame"):
+            coordinator._create_task_from_config(
+                TaskConfig(
+                    name="teleop_piper",
+                    type="single_arm_pink_ik",
+                    joint_names=PIPER_JOINTS,
+                    model_path=PIPER_FK_MODEL,
+                    end_effector_frame=end_effector_frame,
+                    hand="left",
+                )
+            )
+
+
 def test_coordinator_creates_xarm7_pink_task_with_task_local_defaults() -> None:
     coordinator = ControlCoordinator.__new__(ControlCoordinator)
 
@@ -643,6 +750,24 @@ def test_xarm7_pink_task_requests_cartesian_and_button_subscriptions() -> None:
                 type="xarm7_pink_ik",
                 joint_names=XARM7_JOINTS,
                 model_path=XARM7_FK_MODEL,
+                hand="right",
+            )
+        ]
+    )
+
+    assert coordinator._has_cartesian_target_task()
+    assert coordinator._has_teleop_task()
+
+
+def test_single_arm_pink_task_requests_cartesian_and_button_subscriptions() -> None:
+    coordinator = ControlCoordinator.__new__(ControlCoordinator)
+    coordinator.config = ControlCoordinatorConfig(
+        tasks=[
+            TaskConfig(
+                name="teleop_piper",
+                type="piper_pink_ik",
+                joint_names=PIPER_JOINTS,
+                model_path=PIPER_FK_MODEL,
                 hand="right",
             )
         ]

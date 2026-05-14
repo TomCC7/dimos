@@ -25,10 +25,18 @@ from dimos.control.blueprints.teleop import (
     coordinator_teleop_piper,
     coordinator_teleop_xarm6,
     coordinator_teleop_xarm7,
+    is_xarm7_mock_preview,
+    piper_teleop_robot_model_config,
+    xarm7_teleop_robot_model_config,
 )
 from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.transport import LCMTransport
+from dimos.hardware.sensors.camera.module import CameraModule
+from dimos.manipulation.manipulation_module import ManipulationModule
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from dimos.msgs.sensor_msgs.Image import Image
+from dimos.msgs.sensor_msgs.JointState import JointState
+from dimos.teleop.quest.data_collection import PiperDataRecorder
 from dimos.teleop.quest.quest_extensions import ArmTeleopModule
 from dimos.teleop.quest.quest_types import Buttons
 from dimos.visualization.vis_module import vis_module
@@ -46,12 +54,24 @@ teleop_quest_rerun = autoconnect(
 )
 
 
-# XArm7 teleop (sim with --simulation, real otherwise): right controller -> xarm7
+# XArm7 teleop (mock Meshcat preview by default, real with IP, MuJoCo with --simulation):
+# right controller -> xarm7.
 teleop_quest_xarm7 = autoconnect(
     ArmTeleopModule.blueprint(task_names={"right": "teleop_xarm"}),
     coordinator_teleop_xarm7,
+    *(
+        (
+            ManipulationModule.blueprint(
+                robots=[xarm7_teleop_robot_model_config()],
+                enable_viz=True,
+            ),
+        )
+        if is_xarm7_mock_preview
+        else ()
+    ),
 ).transports(
     {
+        ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
         ("right_controller_output", PoseStamped): LCMTransport(
             "/coordinator/cartesian_command", PoseStamped
         ),
@@ -60,19 +80,49 @@ teleop_quest_xarm7 = autoconnect(
 )
 
 
-# Piper teleop (sim with --simulation, real otherwise): left controller -> piper arm
+# Piper teleop (ManipulationModule viz on hardware/mock, MuJoCo with --simulation):
+# right controller -> piper arm.
 teleop_quest_piper = autoconnect(
-    ArmTeleopModule.blueprint(task_names={"left": "teleop_piper"}),
+    ArmTeleopModule.blueprint(task_names={"right": "teleop_piper"}),
     coordinator_teleop_piper,
+    ManipulationModule.blueprint(
+        robots=[piper_teleop_robot_model_config()],
+        enable_viz=True,
+    ),
 ).transports(
     {
-        ("left_controller_output", PoseStamped): LCMTransport(
+        ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
+        ("right_controller_output", PoseStamped): LCMTransport(
             "/coordinator/cartesian_command", PoseStamped
         ),
         ("buttons", Buttons): LCMTransport("/teleop/buttons", Buttons),
     }
 )
 
+# Piper teleop data collection: right controller -> piper arm, with USB camera
+# observation plus measured state/action recording.
+teleop_quest_piper_data_collection = autoconnect(
+    ArmTeleopModule.blueprint(task_names={"right": "teleop_piper"}),
+    coordinator_teleop_piper,
+    CameraModule.blueprint(),
+    PiperDataRecorder.blueprint(),
+    ManipulationModule.blueprint(
+        robots=[piper_teleop_robot_model_config()],
+        enable_viz=True,
+    ),
+).transports(
+    {
+        ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
+        ("desired_joint_action", JointState): LCMTransport(
+            "/coordinator/desired_joint_action", JointState
+        ),
+        ("right_controller_output", PoseStamped): LCMTransport(
+            "/coordinator/cartesian_command", PoseStamped
+        ),
+        ("buttons", Buttons): LCMTransport("/teleop/buttons", Buttons),
+        ("color_image", Image): LCMTransport("/piper_data_collection/color_image", Image),
+    }
+)
 
 # XArm6 teleop (sim with --simulation, real otherwise): right controller -> xarm6
 teleop_quest_xarm6 = autoconnect(
@@ -108,6 +158,7 @@ teleop_quest_dual = autoconnect(
 __all__ = [
     "teleop_quest_dual",
     "teleop_quest_piper",
+    "teleop_quest_piper_data_collection",
     "teleop_quest_rerun",
     "teleop_quest_xarm6",
     "teleop_quest_xarm7",

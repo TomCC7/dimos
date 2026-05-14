@@ -71,10 +71,18 @@ logger = setup_logger()
 CARTESIAN_TARGET_TASK_TYPES = (
     "cartesian_ik",
     "teleop_ik",
+    "single_arm_pink_ik",
+    "piper_pink_ik",
     "xarm7_pink_ik",
     "openarm_bimanual_pink_ik",
 )
-TELEOP_BUTTON_TASK_TYPES = ("teleop_ik", "xarm7_pink_ik", "openarm_bimanual_pink_ik")
+TELEOP_BUTTON_TASK_TYPES = (
+    "teleop_ik",
+    "single_arm_pink_ik",
+    "piper_pink_ik",
+    "xarm7_pink_ik",
+    "openarm_bimanual_pink_ik",
+)
 
 
 @dataclass
@@ -83,7 +91,7 @@ class TaskConfig:
 
     Attributes:
         name: Task name (e.g., "traj_arm")
-        type: Task type ("trajectory", "servo", "velocity", "cartesian_ik", "teleop_ik", "xarm7_pink_ik")
+        type: Task type ("trajectory", "servo", "velocity", "cartesian_ik", "teleop_ik", "single_arm_pink_ik", "piper_pink_ik", "xarm7_pink_ik")
         joint_names: List of joint names this task controls
         priority: Task priority (higher wins arbitration)
         model_path: Path to URDF/MJCF for IK solver (cartesian_ik/teleop_ik only)
@@ -94,6 +102,7 @@ class TaskConfig:
         gripper_closed_pos: Gripper position at trigger 1.0
         max_joint_delta_deg: Maximum allowed per-tick IK joint delta in degrees
         timeout: Teleop target timeout in seconds
+        end_effector_frame: Pinocchio frame name for Pink single-arm IK
     """
 
     name: str
@@ -110,6 +119,8 @@ class TaskConfig:
     gripper_closed_pos: float = 0.0
     max_joint_delta_deg: float = 5.0
     timeout: float = 0.5
+    # Pink IK specific route/model selection. Cost defaults live on concrete task configs.
+    end_effector_frame: str | None = None
 
 
 class ControlCoordinatorConfig(ModuleConfig):
@@ -164,6 +175,9 @@ class ControlCoordinator(Module):
 
     # Output: Aggregated joint state for external consumers
     joint_state: Out[JointState]
+
+    # Output: Post-arbitration desired joint action for data collection
+    desired_joint_action: Out[JointState]
 
     # Input: Streaming joint commands for real-time control
     joint_command: In[JointState]
@@ -364,6 +378,61 @@ class ControlCoordinator(Module):
                     model_path=cfg.model_path,
                     ee_joint_id=cfg.ee_joint_id,
                     priority=cfg.priority,
+                    hand=cfg.hand,
+                    gripper_joint=cfg.gripper_joint,
+                    gripper_open_pos=cfg.gripper_open_pos,
+                    gripper_closed_pos=cfg.gripper_closed_pos,
+                ),
+            )
+
+        elif task_type == "single_arm_pink_ik":
+            from dimos.control.tasks.pink_teleop_task import (
+                SingleArmPinkIKTask,
+                SingleArmPinkIKTaskConfig,
+            )
+
+            if cfg.model_path is None:
+                raise ValueError(
+                    f"SingleArmPinkIKTask '{cfg.name}' requires model_path in TaskConfig"
+                )
+            if not cfg.end_effector_frame:
+                raise ValueError(
+                    f"SingleArmPinkIKTask '{cfg.name}' requires end_effector_frame in TaskConfig"
+                )
+
+            return SingleArmPinkIKTask(
+                cfg.name,
+                SingleArmPinkIKTaskConfig(
+                    joint_names=cfg.joint_names,
+                    model_path=cfg.model_path,
+                    end_effector_frame=cfg.end_effector_frame,
+                    priority=cfg.priority,
+                    timeout=cfg.timeout,
+                    max_joint_delta_deg=cfg.max_joint_delta_deg,
+                    hand=cfg.hand,
+                    gripper_joint=cfg.gripper_joint,
+                    gripper_open_pos=cfg.gripper_open_pos,
+                    gripper_closed_pos=cfg.gripper_closed_pos,
+                ),
+            )
+
+        elif task_type == "piper_pink_ik":
+            from dimos.control.tasks.pink_teleop_task import PiperPinkIKTask, PiperPinkIKTaskConfig
+
+            model_path = cfg.model_path
+            if model_path is None:
+                from dimos.robot.catalog.piper import PIPER_FK_MODEL
+
+                model_path = PIPER_FK_MODEL
+
+            return PiperPinkIKTask(
+                cfg.name,
+                PiperPinkIKTaskConfig(
+                    joint_names=cfg.joint_names,
+                    model_path=model_path,
+                    priority=cfg.priority,
+                    timeout=cfg.timeout,
+                    max_joint_delta_deg=cfg.max_joint_delta_deg,
                     hand=cfg.hand,
                     gripper_joint=cfg.gripper_joint,
                     gripper_open_pos=cfg.gripper_open_pos,
@@ -749,6 +818,7 @@ class ControlCoordinator(Module):
             task_lock=self._task_lock,
             joint_to_hardware=self._joint_to_hardware,
             publish_callback=publish_cb,
+            desired_action_callback=self.desired_joint_action.publish,
             frame_id=self.config.joint_state_frame_id,
             log_ticks=self.config.log_ticks,
         )
