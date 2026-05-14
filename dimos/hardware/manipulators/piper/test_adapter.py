@@ -91,6 +91,7 @@ def test_disconnect_moves_to_zero_before_disabling() -> None:
     assert fake_sdk.calls == [
         ("MotionCtrl_2", (0x01, 0x01, adapter_mod.PIPER_SHUTDOWN_SPEED_RATE, 0x00)),
         ("JointCtrl", (0, 0, 0, 0, 0, 0)),
+        ("GripperCtrl", (0, adapter_mod.DEFAULT_GRIPPER_SPEED, 0x02, 0)),
         ("DisablePiper", ()),
         ("DisconnectPort", ()),
     ]
@@ -107,6 +108,7 @@ def test_disconnect_disables_and_disconnects_when_zero_move_times_out(monkeypatc
     adapter.disconnect()
 
     assert ("JointCtrl", (0, 0, 0, 0, 0, 0)) in fake_sdk.calls
+    assert ("GripperCtrl", (0, adapter_mod.DEFAULT_GRIPPER_SPEED, 0x02, 0)) in fake_sdk.calls
     assert ("DisablePiper", ()) in fake_sdk.calls
     assert fake_sdk.calls[-1] == ("DisconnectPort", ())
 

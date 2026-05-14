@@ -122,6 +122,7 @@ class PiperAdapter(ManipulatorAdapter):
             try:
                 if self._enabled:
                     self._move_to_zero_position()
+                    self._deactivate_gripper()
                     try:
                         self._sdk.DisablePiper()
                     finally:
@@ -134,6 +135,17 @@ class PiperAdapter(ManipulatorAdapter):
                 self._sdk = None
                 self._connected = False
                 self._gripper_initialized = False
+
+    def _deactivate_gripper(self) -> None:
+        """Disable gripper and clear errors prior to arm shutdown."""
+        if not self._sdk or not hasattr(self._sdk, "GripperCtrl"):
+            return
+        try:
+            # SDK status code 0x02: disable and clear errors.
+            self._sdk.GripperCtrl(0, self._gripper_speed, 0x02, 0)
+        except Exception:
+            pass
+        self._gripper_initialized = False
 
     def _move_to_zero_position(self) -> None:
         """Move arm joints to zero before normal shutdown."""
@@ -415,6 +427,7 @@ class PiperAdapter(ManipulatorAdapter):
                     return True
                 return False
             else:
+                self._deactivate_gripper()
                 self._sdk.DisablePiper()
                 self._enabled = False
                 self._gripper_initialized = False
