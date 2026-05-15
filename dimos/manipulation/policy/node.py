@@ -14,11 +14,17 @@
 
 """`PolicyNode` DimOS module.
 
-Connects multi-camera images, the latest robot joint state, a task
-description, and the teleop `Buttons` stream to a configured
+Connects a single typed camera image, the latest robot joint state, a
+task description, and the teleop `Buttons` stream to a configured
 `PolicyBackend`. Runs inference at `PolicyNodeConfig.policy_rate` on its
 own thread (kept off the `ControlCoordinator` tick loop) and publishes
 joint position commands as `JointState` on `joint_command`.
+
+The single `image: In[Image]` stream slot is exposed under
+`PolicyNodeConfig.camera_key` in the `PolicyObservation.images` dict
+handed to the backend. Multi-camera support is intentionally out of
+scope; a future change extends the slot set from this baseline when a
+deployment requires it.
 
 Teleop preempts: when any button in `teleop_engage_buttons` goes high,
 publication is suspended and `backend.reset()` is called. On disengage,
@@ -61,7 +67,7 @@ from dimos.manipulation.policy.command import (
     NoOpCommand,
     PolicyCommand,
 )
-from dimos.manipulation.policy.config import ALLOWED_CAMERA_SLOTS, CommandMode, PolicyNodeConfig
+from dimos.manipulation.policy.config import CommandMode, PolicyNodeConfig
 from dimos.manipulation.policy.observation import PolicyObservation
 from dimos.manipulation.policy.registry import create_backend
 from dimos.msgs.sensor_msgs.Image import Image
@@ -70,28 +76,17 @@ from dimos.teleop.quest.quest_types import Buttons
 from dimos.utils.logging_config import setup_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from dimos.manipulation.policy.backend import PolicyBackend
 
-    _ImageHandler = Callable[[Image], None]
-
 logger = setup_logger()
-
-
-# Slot names on the node that may be connected to camera streams. Mirrored
-# from `PolicyNodeConfig.ALLOWED_CAMERA_SLOTS` for runtime use; keep the
-# `In[Image]` annotations on `PolicyNode` in sync if you change this list.
-_IMAGE_SLOT_NAMES: tuple[str, ...] = ALLOWED_CAMERA_SLOTS
 
 
 class PolicyNode(Module):
     """Streams perception → policy → coordinator-native commands.
 
     Inputs:
-        image, image_aux1, image_aux2: Camera image slots. Each slot maps
-            via `PolicyNodeConfig.camera_sources` to a key in the
-            `PolicyObservation.images` dict the backend receives.
+        image: Camera image. Surfaced to the backend under
+            `PolicyNodeConfig.camera_key` in `PolicyObservation.images`.
         joint_state: Latest robot joint state.
         task_description: Plain text task. Falls back to
             `PolicyNodeConfig.default_task` when no value has arrived.
@@ -106,8 +101,6 @@ class PolicyNode(Module):
     config: PolicyNodeConfig
 
     image: In[Image]
-    image_aux1: In[Image]
-    image_aux2: In[Image]
     joint_state: In[JointState]
     task_description: In[str]
     buttons: In[Buttons]
@@ -118,7 +111,7 @@ class PolicyNode(Module):
         super().__init__(*args, **kwargs)
 
         self._latest_lock = threading.Lock()
-        self._latest_images: dict[str, Image] = {}
+        self._latest_image: Image | None = None
         self._latest_joint_state: JointState | None = None
         self._latest_joint_state_ts: float = 0.0
         self._latest_task: str | None = None
@@ -227,15 +220,10 @@ class PolicyNode(Module):
     # ── input subscription ────────────────────────────────────────────────
 
     def _subscribe_inputs(self) -> None:
-        for slot in _IMAGE_SLOT_NAMES:
-            if slot not in self.config.camera_sources:
-                continue
-            stream: In[Image] = getattr(self, slot)
-            cam_key = self.config.camera_sources[slot]
-            try:
-                self._unsub.append(stream.subscribe(self._make_image_handler(cam_key)))
-            except Exception:
-                logger.warning(f"PolicyNode: could not subscribe to image slot '{slot}'")
+        try:
+            self._unsub.append(self.image.subscribe(self._on_image))
+        except Exception:
+            logger.warning("PolicyNode: could not subscribe to image")
 
         try:
             self._unsub.append(self.joint_state.subscribe(self._on_joint_state))
@@ -256,17 +244,11 @@ class PolicyNode(Module):
             except Exception:
                 logger.debug("PolicyNode: buttons not connected (no teleop preempt)")
 
-    def _make_image_handler(self, camera_key: str) -> _ImageHandler:
-        def _handle(msg: Image) -> None:
-            self._on_image(camera_key, msg)
-
-        return _handle
-
     # ── handlers (also called directly from unit tests) ───────────────────
 
-    def _on_image(self, camera_key: str, msg: Image) -> None:
+    def _on_image(self, msg: Image) -> None:
         with self._latest_lock:
-            self._latest_images[camera_key] = msg
+            self._latest_image = msg
 
     def _on_joint_state(self, msg: JointState) -> None:
         with self._latest_lock:
@@ -304,12 +286,13 @@ class PolicyNode(Module):
         directly without going through the inference thread.
         """
         with self._latest_lock:
-            images = dict(self._latest_images)
+            image = self._latest_image
             joint_state = self._latest_joint_state
             task = self._latest_task
             joint_ts = self._latest_joint_state_ts
         if task is None:
             task = self.config.default_task
+        images: dict[str, Image] = {self.config.camera_key: image} if image is not None else {}
         return PolicyObservation(
             images=images,
             joint_state=joint_state,
@@ -475,10 +458,15 @@ class PolicyNode(Module):
     # ── test/inspection helpers ───────────────────────────────────────────
 
     def latest(self) -> Mapping[str, Any]:
-        """Snapshot of the latest cached inputs (for tests/diagnostics)."""
+        """Snapshot of the latest cached inputs (for tests/diagnostics).
+
+        ``image`` is the latest cached `Image` or ``None`` if no frame has
+        arrived yet. The corresponding entry under the configured
+        ``camera_key`` is what shows up in `PolicyObservation.images`.
+        """
         with self._latest_lock:
             return {
-                "images": dict(self._latest_images),
+                "image": self._latest_image,
                 "joint_state": self._latest_joint_state,
                 "task": self._latest_task,
                 "buttons": self._latest_buttons,

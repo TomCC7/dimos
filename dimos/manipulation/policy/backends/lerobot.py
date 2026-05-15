@@ -230,19 +230,29 @@ class LeRobotBackend:
 class _PolicyAutoLoader:
     """Resolve a LeRobot policy class from a saved checkpoint.
 
-    `Policy.from_pretrained(path)` is the modern API but, depending on the
-    `lerobot` version, the user might be loading via `get_policy_class`.
-    This helper unifies the two by:
+    The loader prefers the concrete-class path because lerobot's
+    `PreTrainedPolicy.from_pretrained` returns the abstract base in some
+    versions (notably 0.5.x), which then fails at instantiation time
+    rather than at import time:
 
-    - Trying `LerobotPolicy.from_pretrained(path)` (recent versions).
-    - Falling back to reading `path/config.json` for `policy.type` and
-      using `get_policy_class(type).from_pretrained(...)`.
+    1. Read `path/config.json` for the policy type (top-level `type` in
+       lerobot 0.5+, or legacy `policy.type` in older schemas).
+    2. If found, dispatch via `get_policy_class(type).from_pretrained(...)`.
+    3. Otherwise fall back to `PreTrainedPolicy.from_pretrained(...)`,
+       which works on versions where it correctly dispatches to the
+       concrete class.
     """
 
     def __init__(self, get_policy_class: Any) -> None:
         self._get_policy_class = get_policy_class
 
     def from_pretrained(self, path: str, **kwargs: Any) -> Any:
+        policy_type = self._read_policy_type(path)
+        if policy_type is not None:
+            policy_cls = self._get_policy_class(policy_type)
+            return policy_cls.from_pretrained(path, **kwargs)
+
+        # No type in config — last-resort PreTrainedPolicy path.
         try:
             from lerobot.policies.pretrained import (  # type: ignore[import-not-found, import-untyped]
                 PreTrainedPolicy,
@@ -251,27 +261,19 @@ class _PolicyAutoLoader:
             return PreTrainedPolicy.from_pretrained(path, **kwargs)
         except ImportError:
             pass
-        try:
-            from lerobot.common.policies.pretrained import (  # type: ignore[import-not-found, import-untyped]
-                PreTrainedPolicy,
-            )
+        from lerobot.common.policies.pretrained import (  # type: ignore[import-not-found, import-untyped]
+            PreTrainedPolicy,
+        )
 
-            return PreTrainedPolicy.from_pretrained(path, **kwargs)
-        except ImportError:
-            pass
-
-        # Legacy path: derive policy class from the checkpoint config.
-        policy_type = self._read_policy_type(path)
-        if policy_type is None:
-            raise ValueError(
-                f"LeRobotBackend: could not determine policy type from checkpoint at {path!r}; "
-                "set 'policy.type' in the checkpoint config or upgrade lerobot."
-            )
-        policy_cls = self._get_policy_class(policy_type)
-        return policy_cls.from_pretrained(path, **kwargs)
+        return PreTrainedPolicy.from_pretrained(path, **kwargs)
 
     @staticmethod
     def _read_policy_type(path: str) -> str | None:
+        """Extract the policy type from a checkpoint's config.json.
+
+        Handles both schemas: lerobot 0.5+ has `type` at the top level;
+        older versions nested it under `policy.type`.
+        """
         import json
         from pathlib import Path
 
@@ -282,7 +284,14 @@ class _PolicyAutoLoader:
             data = json.loads(cfg_path.read_text())
         except (OSError, json.JSONDecodeError):
             return None
-        policy = data.get("policy") if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            return None
+        # New schema: top-level "type".
+        t = data.get("type")
+        if isinstance(t, str):
+            return t
+        # Legacy schema: nested under "policy".
+        policy = data.get("policy")
         if isinstance(policy, dict):
             t = policy.get("type")
             if isinstance(t, str):

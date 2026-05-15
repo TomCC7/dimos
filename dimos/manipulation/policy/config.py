@@ -25,10 +25,6 @@ from dimos.core.module import ModuleConfig
 # Command families the node may publish.
 CommandMode = Literal["joint_position"]
 
-# Slot names on `PolicyNode` that may be wired to camera streams. Kept
-# in sync with the `In[Image]` annotations on the node class.
-ALLOWED_CAMERA_SLOTS: tuple[str, ...] = ("image", "image_aux1", "image_aux2")
-
 
 class PolicyNodeConfig(ModuleConfig):
     """Configuration for `PolicyNode`.
@@ -44,10 +40,12 @@ class PolicyNodeConfig(ModuleConfig):
         joint_name_map: Optional mapping from backend-emitted joint names
             to coordinator-native joint names. Empty by default — backend
             joint names are used as-is.
-        camera_sources: Maps each `In[Image]` slot on the node (e.g.,
-            ``"image"``, ``"image_aux1"``, ``"image_aux2"``) to the camera
-            key the backend expects in `PolicyObservation.images`. Slots not
-            listed here are ignored.
+        camera_key: Key the node uses for the camera entry in
+            `PolicyObservation.images`. The single `image: In[Image]` slot
+            on `PolicyNode` is published under this key in the observation
+            dict the backend receives. Defaults to ``"main"``; the Piper
+            policy deployment overrides this to ``"usb"`` to match
+            `PiperRobotContract.cameras`.
         enabled_command_modes: Command families the node will publish.
             Backend output in any other family is rejected.
         default_task: Default task description used when no upstream value
@@ -75,7 +73,7 @@ class PolicyNodeConfig(ModuleConfig):
     policy_rate: float = 10.0
     joint_names: list[str] = Field(default_factory=lambda: [])
     joint_name_map: dict[str, str] = Field(default_factory=lambda: {})
-    camera_sources: dict[str, str] = Field(default_factory=lambda: {"image": "main"})
+    camera_key: str = "main"
     enabled_command_modes: list[CommandMode] = Field(
         default_factory=lambda: ["joint_position"]  # type: ignore[arg-type]
     )
@@ -87,17 +85,11 @@ class PolicyNodeConfig(ModuleConfig):
     buttons_grace_period: float = 2.0
 
     @model_validator(mode="after")
-    def _validate_camera_and_command_modes(self) -> PolicyNodeConfig:
-        bad_slots = [s for s in self.camera_sources if s not in ALLOWED_CAMERA_SLOTS]
-        if bad_slots:
-            raise ValueError(
-                "PolicyNodeConfig.camera_sources: unknown image slot(s) "
-                f"{bad_slots}. Available slots: {list(ALLOWED_CAMERA_SLOTS)}"
-            )
+    def _validate_command_modes(self) -> PolicyNodeConfig:
         bad_modes = [m for m in self.enabled_command_modes if m not in ("joint_position",)]
         if bad_modes:
             raise ValueError(f"PolicyNodeConfig.enabled_command_modes: unsupported {bad_modes}")
         return self
 
 
-__all__ = ["ALLOWED_CAMERA_SLOTS", "CommandMode", "PolicyNodeConfig"]
+__all__ = ["CommandMode", "PolicyNodeConfig"]

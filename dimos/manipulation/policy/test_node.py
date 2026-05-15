@@ -100,7 +100,7 @@ def node_factory(request):
             backend=backend_name,
             policy_rate=200.0,
             joint_names=["j1", "j2"],
-            camera_sources={"image": "main"},
+            camera_key="main",
             # Default the engage-button list off so existing tests don't
             # need to supply a Buttons message before they can publish.
             # Tests of the buttons-gating behavior override this.
@@ -129,21 +129,29 @@ def node_factory(request):
 # ── 6.3 observation assembly ──────────────────────────────────────────────
 
 
-def test_observation_assembly_with_multi_camera_inputs(node_factory):
+def test_observation_assembly_with_single_camera_input(node_factory):
     node, _ = node_factory(
         backend_name="__test_assembly__",
-        camera_sources={"image": "main", "image_aux1": "wrist"},
+        camera_key="main",
     )
-    node._on_image("main", _img(seed=1))
-    node._on_image("wrist", _img(seed=2))
+    node._on_image(_img(seed=1))
     node._on_joint_state(JointState(name=["j1", "j2"], position=[0.1, 0.2]))
     node._on_task_description("pick up the cube")
 
     obs = node.assemble_observation()
-    assert sorted(obs.images.keys()) == ["main", "wrist"]
+    assert list(obs.images.keys()) == ["main"]
     assert obs.joint_state is not None
     assert obs.joint_state.name == ["j1", "j2"]
     assert obs.task == "pick up the cube"
+
+
+def test_observation_assembly_omits_camera_until_first_frame(node_factory):
+    node, _ = node_factory(backend_name="__test_no_image__")
+    node._on_joint_state(JointState(name=["j1", "j2"], position=[0.0, 0.0]))
+
+    obs = node.assemble_observation()
+    assert obs.images == {}
+    assert obs.joint_state is not None
 
 
 def test_default_task_used_when_no_task_input_arrived(node_factory):
@@ -330,15 +338,6 @@ def test_engage_then_repeated_engage_only_resets_once_per_edge(node_factory):
 # ── config validation ────────────────────────────────────────────────────
 
 
-def test_unknown_camera_slot_in_config_raises():
-    with pytest.raises(Exception, match="image slot"):
-        PolicyNodeConfig(
-            backend="test",
-            joint_names=["j1"],
-            camera_sources={"not_a_real_slot": "main"},
-        )
-
-
 def test_unsupported_command_mode_raises():
     with pytest.raises(Exception, match="enabled_command_modes|joint_position"):
         PolicyNodeConfig(
@@ -390,7 +389,7 @@ def test_engage_edge_during_in_flight_select_action_drops_command(node_factory):
         backend="__test_race__",
         policy_rate=200.0,
         joint_names=["j1", "j2"],
-        camera_sources={"image": "main"},
+        camera_key="main",
         teleop_engage_buttons=["right_primary"],
     )
     node._backend = backend

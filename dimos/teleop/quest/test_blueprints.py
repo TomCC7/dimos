@@ -262,6 +262,23 @@ def test_piper_data_collection_viewer_and_recorder_share_config_identity() -> No
             assert recorder_atom.kwargs[key] is bridge_atom.kwargs[key], key
 
 
+def test_piper_data_collection_recorder_declares_typed_color_image_slot() -> None:
+    """The recorder atom in the data-collection blueprint exposes a typed
+    `color_image: In[Image]` stream slot AND carries an explicit
+    `camera_entity_path` kwarg matching the LeRobot-aligned recorded path.
+    Together these route the camera to the typed path instead of the
+    generic `topic_to_entity` callback."""
+    with _teleop_blueprints(simulation=False, xarm7_ip="192.168.1.10", can_port=None) as (
+        _control_blueprints,
+        quest_blueprints,
+    ):
+        bp = quest_blueprints.teleop_quest_piper_data_collection
+        recorder_atom = _atom_for(bp, "RerunDataRecorder")
+        stream_names = {(s.name, s.direction) for s in recorder_atom.streams}
+        assert ("color_image", "in") in stream_names
+        assert recorder_atom.kwargs["camera_entity_path"] == "/observation/camera/usb"
+
+
 def test_piper_data_collection_recorder_path_factory_monotonic() -> None:
     """First call yields ``…/episode_001.rrd``, second call yields ``…/episode_002.rrd``."""
     with _teleop_blueprints(simulation=False, xarm7_ip="192.168.1.10", can_port=None) as (
@@ -435,22 +452,52 @@ def test_piper_policy_engage_buttons_derived_from_right_hand_teleop() -> None:
         assert "left_primary" not in engage
 
 
-def test_piper_policy_default_backend_is_test() -> None:
-    """Default deployment uses the dependency-free TestPolicy backend.
-
-    The amplitude is intentionally non-zero so simulation runs produce
-    visible motion. The gripper amplitude (last entry) is kept small to
-    avoid slamming, and per-joint phases stagger the motion across joints.
+def test_piper_policy_test_variant_uses_test_backend() -> None:
+    """Sibling blueprint `teleop_quest_piper_policy_test` swaps the LeRobot
+    backend for the dependency-free TestPolicy so the full pipeline (preempt,
+    rollout toggle, camera, coordinator arbitration) can be exercised
+    without loading a model.
     """
+    with _teleop_blueprints(simulation=False, xarm7_ip="192.168.1.10", can_port=None) as (
+        _control_blueprints,
+        quest_blueprints,
+    ):
+        bp = quest_blueprints.teleop_quest_piper_policy_test
+        policy_atom = _atom_for(bp, "PolicyNode")
+        assert policy_atom.kwargs["backend"] == "test"
+        cfg = policy_atom.kwargs["backend_config"]
+        # 7-DOF Piper joint set with bounded gripper amplitude.
+        amp = cfg["amplitude"]
+        assert isinstance(amp, list) and len(amp) == 7
+        assert all(a > 0 for a in amp[:6])
+        assert amp[6] < amp[0]
+        # Shell matches the ACT variant (same modules, same engage buttons).
+        names = _module_names(bp)
+        for required in (
+            "ArmTeleopModule",
+            "ControlCoordinator",
+            "CameraModule",
+            "PolicyNode",
+            "RolloutToggle",
+            "ManipulationModule",
+        ):
+            assert required in names, (required, names)
+        assert "right_primary" in policy_atom.kwargs["teleop_engage_buttons"]
+
+
+def test_piper_policy_default_backend_is_lerobot_act() -> None:
+    """Default deployment uses the LeRobot backend pointed at a local
+    Piper-contract ACT checkpoint. The contract handles the
+    observation→frame and action→JointState translation."""
     with _teleop_blueprints(simulation=False, xarm7_ip="192.168.1.10", can_port=None) as (
         _control_blueprints,
         quest_blueprints,
     ):
         bp = quest_blueprints.teleop_quest_piper_policy
         policy_atom = _atom_for(bp, "PolicyNode")
-        assert policy_atom.kwargs["backend"] == "test"
-        amp = policy_atom.kwargs["backend_config"]["amplitude"]
-        assert isinstance(amp, list) and len(amp) == 7
-        # Arm joints get a visible swing; the gripper stays small.
-        assert all(a > 0 for a in amp[:6])
-        assert amp[6] < amp[0]  # gripper bounded below arm amplitude
+        assert policy_atom.kwargs["backend"] == "lerobot"
+        cfg = policy_atom.kwargs["backend_config"]
+        assert cfg["contract"] == "piper"
+        assert isinstance(cfg["policy_path"], str) and cfg["policy_path"]
+        # Camera key matches PiperRobotContract.cameras (`usb`).
+        assert policy_atom.kwargs["camera_key"] == "usb"

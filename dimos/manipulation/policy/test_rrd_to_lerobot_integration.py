@@ -52,7 +52,6 @@ pytest.importorskip("mujoco", reason="recorder fixtures require the sim extra")
 from dimos.msgs.sensor_msgs.Image import Image, ImageFormat
 from dimos.msgs.sensor_msgs.JointState import JointState
 from dimos.teleop.quest.data_collection_vis import (
-    CAMERA_TOPIC,
     piper_data_collection_joint_short_names,
     piper_data_collection_rerun_config,
 )
@@ -133,6 +132,7 @@ def _drive_session(tmp_path: Path, *, n_episodes: int, frames_per_episode: int) 
         visual_override=cfg["visual_override"],
         entity_prefix=cfg["entity_prefix"],
         topic_to_entity=cfg["topic_to_entity"],
+        camera_entity_path=cfg["camera_entity_path"],
         record_path_factory=factory,
         recording_id_factory=cfg["recording_id_factory"],
         episode_metadata=cfg["episode_metadata"],
@@ -141,7 +141,7 @@ def _drive_session(tmp_path: Path, *, n_episodes: int, frames_per_episode: int) 
     for _ in range(n_episodes):
         recorder.toggle_recording()
         for _ in range(frames_per_episode):
-            pubsub.push(_Topic(CAMERA_TOPIC), _make_image())
+            recorder._on_color_image(_make_image())
             pubsub.push(_Topic("/coordinator/joint_state"), _make_joint_state())
             pubsub.push(_Topic("/coordinator/desired_joint_action"), _make_joint_state())
         recorder.toggle_recording()

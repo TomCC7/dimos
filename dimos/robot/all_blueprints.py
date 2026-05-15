@@ -72,6 +72,7 @@ all_blueprints = {
     "teleop-quest-piper": "dimos.teleop.quest.blueprints:teleop_quest_piper",
     "teleop-quest-piper-data-collection": "dimos.teleop.quest.blueprints:teleop_quest_piper_data_collection",
     "teleop-quest-piper-policy": "dimos.teleop.quest.blueprints:teleop_quest_piper_policy",
+    "teleop-quest-piper-policy-test": "dimos.teleop.quest.blueprints:teleop_quest_piper_policy_test",
     "teleop-quest-rerun": "dimos.teleop.quest.blueprints:teleop_quest_rerun",
     "teleop-quest-xarm6": "dimos.teleop.quest.blueprints:teleop_quest_xarm6",
     "teleop-quest-xarm7": "dimos.teleop.quest.blueprints:teleop_quest_xarm7",

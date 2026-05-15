@@ -1,30 +1,4 @@
-# policy-teleop-deployment Specification
-
-## Purpose
-TBD - created by archiving change policy-rollout-deployment. Update Purpose after archive.
-## Requirements
-### Requirement: Piper teleop+policy coordinator blueprint composes teleop and policy servo tasks
-
-The system SHALL provide a control-coordinator blueprint named `coordinator_teleop_piper_with_policy` at `dimos.control.blueprints.teleop` (or equivalent location reachable from `dimos.manipulation.policy.blueprints`) that extends `coordinator_teleop_piper` with a `servo` task derived from `policy_servo_task_config`.
-
-The servo task SHALL:
-
-- Claim every joint in the Piper arm's full joint set as returned by `piper_data_collection_joint_short_names()` prefixed with the arm joint prefix (e.g., `"arm/joint1"`, ..., `"arm/joint6"`, `"arm/gripper"`).
-- Be built by calling `policy_servo_task_config(name=..., joint_names=..., teleop_tasks=[piper_pink_ik_task])` so its priority is auto-derived to one less than the Piper Pink IK teleop task's priority.
-
-The coordinator blueprint SHALL preserve all transports and modules from `coordinator_teleop_piper` (joint state, cartesian command, buttons, optional MuJoCo simulation).
-
-#### Scenario: Coordinator includes both teleop_pink_ik and servo tasks
-
-- **WHEN** `coordinator_teleop_piper_with_policy` is built
-- **THEN** the resulting `ControlCoordinatorConfig.tasks` SHALL contain at least one task with `type="single_arm_pink_ik"` (or `"piper_pink_ik"`)
-- **AND** SHALL contain exactly one task with `type="servo"` whose `joint_names` equal the Piper full joint set
-- **AND** the servo task's `priority` SHALL be strictly less than the Pink IK task's `priority`
-
-#### Scenario: Coordinator preserves teleop transports
-
-- **WHEN** `coordinator_teleop_piper_with_policy` is built
-- **THEN** the blueprint's transport map SHALL include `("joint_state", JointState)`, `("cartesian_command", PoseStamped)`, and `("buttons", Buttons)` mapped to the same LCM channels used by `coordinator_teleop_piper`
+## MODIFIED Requirements
 
 ### Requirement: teleop_quest_piper_policy deployment blueprint composes the full stack
 

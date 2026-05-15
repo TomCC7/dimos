@@ -57,7 +57,7 @@ def policy_node():
         backend="__test_e2e__",
         policy_rate=200.0,
         joint_names=["arm/j1", "arm/j2"],
-        camera_sources={"image": "main"},
+        camera_key="main",
     )
     # Inject a backend that we control (the registered factory above just
     # constructs a fresh TestPolicy; we do the same for the test path).
