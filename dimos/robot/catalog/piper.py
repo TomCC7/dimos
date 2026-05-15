@@ -21,8 +21,13 @@ from typing import Any
 from dimos.robot.config import GripperConfig, RobotConfig
 from dimos.utils.data import LfsPath
 
-# Pre-built MJCF for Pinocchio FK (xacro not supported by Pinocchio)
-PIPER_FK_MODEL = LfsPath("piper_description/mujoco_model/piper_no_gripper_description.xml")
+# Gripper-inclusive URDF/Xacro for Pinocchio FK. The Pink teleop task reduces
+# the finger joints out of this model so arm IK can target ``gripper_tcp`` (a
+# virtual fixed frame at the midpoint of link7/link8, attached to ``gripper_base``).
+PIPER_FK_MODEL = LfsPath("piper_description/urdf/piper_description.xacro")
+
+# Arm-only MJCF for legacy six-DOF Cartesian IK paths.
+PIPER_ARM_FK_MODEL = LfsPath("piper_description/mujoco_model/piper_no_gripper_description.xml")
 
 # Simulation model path (MJCF)
 PIPER_SIM_PATH = LfsPath("piper/scene.xml")
@@ -60,7 +65,7 @@ def piper(
     defaults: dict[str, Any] = {
         "name": name,
         "model_path": LfsPath("piper_description") / "urdf/piper_description.xacro",
-        "end_effector_link": "gripper_base",
+        "end_effector_link": "gripper_tcp",
         "adapter_type": adapter_type,
         "address": address,
         "joint_names": [f"joint{i}" for i in range(1, 7)],
@@ -86,4 +91,38 @@ def piper(
     return RobotConfig(**defaults)
 
 
-__all__ = ["PIPER_FK_MODEL", "PIPER_GRIPPER_COLLISION_EXCLUSIONS", "piper"]
+def piper_single_arm_pink_task_config(
+    cfg: RobotConfig,
+    *,
+    task_name: str = "teleop_piper",
+    hand: str = "right",
+) -> Any:
+    """Build a catalog-backed single-arm Pink teleop task config for Piper."""
+    gripper_joint: str | None = None
+    gripper_open_pos = 0.0
+    gripper_closed_pos = 0.0
+    if cfg.gripper and cfg.gripper.joints:
+        joint_prefix = cfg.joint_prefix if cfg.joint_prefix is not None else f"{cfg.name}/"
+        gripper_joint = f"{joint_prefix}{cfg.gripper.joints[0]}"
+        gripper_open_pos = cfg.gripper.open_position
+        gripper_closed_pos = cfg.gripper.close_position
+
+    return cfg.to_task_config(
+        task_type="single_arm_pink_ik",
+        task_name=task_name,
+        model_path=PIPER_FK_MODEL,
+        end_effector_frame=cfg.end_effector_link,
+        hand=hand,
+        gripper_joint=gripper_joint,
+        gripper_open_pos=gripper_open_pos,
+        gripper_closed_pos=gripper_closed_pos,
+    )
+
+
+__all__ = [
+    "PIPER_ARM_FK_MODEL",
+    "PIPER_FK_MODEL",
+    "PIPER_GRIPPER_COLLISION_EXCLUSIONS",
+    "piper",
+    "piper_single_arm_pink_task_config",
+]

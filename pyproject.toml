@@ -55,6 +55,9 @@ dependencies = [
     "numpy>=1.26.4",
     "scipy>=1.15.1",
     "pin>=3.3.0", # Pinocchio IK library
+    "pin-pink>=4.2.0",
+    "qpsolvers[open-source-solvers]>=4.12.0",
+    "daqp>=0.8.5",
     "reactivex",
     "sortedcontainers==2.4.0",
     "pydantic",
@@ -210,26 +213,23 @@ manipulation = [
     # Planning (Drake)
     "drake==1.45.0; sys_platform == 'darwin' and platform_machine != 'aarch64'",
     "drake>=1.40.0; sys_platform != 'darwin' and platform_machine != 'aarch64'",
-
     # Hardware SDKs
     "piper-sdk",
     "pyrealsense2; sys_platform != 'darwin'",
     "xarm-python-sdk>=1.17.0",
-
     # Mesh conversion (STL/DAE → OBJ for Drake collision geometry)
     "trimesh",
     "pycollada",
-
     # Visualization (Optional)
     "kaleido>=0.2.1",
     "plotly>=5.9.0",
     "xacro",
-
     # Other
     "matplotlib>=3.7.1",
     "pyyaml>=6.0",
+    # Policy training/inference (requires Python>=3.12)
+    "lerobot>=0.5.1; python_version >= '3.12'",
 ]
-
 
 cpu = [
     # CPU inference backends
@@ -352,9 +352,14 @@ base = [
     "dimos[agents,web,visualization]",
 ]
 
-# All extras except dds and unitree-dds (which require special system setup).
+# All extras except dds, unitree-dds, perception, and manipulation (which require
+# special system setup or have mutually exclusive dependencies). `perception` and
+# `manipulation` conflict because lerobot needs huggingface-hub>=1.0 while transformers<4.54
+# (used by perception) needs huggingface-hub<1.0 — install one alongside `all`:
+#   uv sync --extra all --extra perception
+#   uv sync --extra all --extra manipulation
 all = [
-    "dimos[agents,base,cpu,cuda,dev,docker,drone,manipulation,misc,perception,psql,sim,unitree,visualization,web]",
+    "dimos[agents,base,cpu,cuda,dev,docker,drone,misc,psql,sim,unitree,visualization,web]",
 ]
 
 [tool.uv]
@@ -363,6 +368,12 @@ override-dependencies = [
     # (CVE-2026-25990, CVE-2026-40192, CVE-2026-42311).
     "pillow>=12.2.0",
     "pytest==8.3.5", # because gtsam screwed up their dev dependencies
+]
+conflicts = [
+    [
+        { extra = "perception" },
+        { extra = "manipulation" },
+    ]
 ]
 
 [tool.ruff]
@@ -428,6 +439,9 @@ module = [
     "nav_msgs.*",
     "open_clip",
     "pinocchio",
+    "pink",
+    "pink.*",
+    "qpsolvers",
     "piper_sdk.*",
     "plotext",
     "plum.*",

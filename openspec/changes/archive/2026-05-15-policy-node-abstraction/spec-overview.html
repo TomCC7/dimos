@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Policy Node Abstraction - OpenSpec Overview</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232563eb'/%3E%3Cpath d='M18 39c8-18 20 18 28 0' fill='none' stroke='white' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fb;
+      --panel: #ffffff;
+      --panel-soft: #f1f5f9;
+      --text: #152033;
+      --muted: #5c6b82;
+      --line: #d9e1ec;
+      --blue: #2563eb;
+      --blue-soft: #e7efff;
+      --green: #0f9f6e;
+      --green-soft: #e8f8f1;
+      --amber: #b7791f;
+      --amber-soft: #fff4db;
+      --purple: #7c3aed;
+      --purple-soft: #f0e9ff;
+      --red: #c2410c;
+      --red-soft: #fff0e8;
+      --shadow: 0 14px 40px rgba(21, 32, 51, 0.08);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top left, #e8f1ff 0, transparent 32rem), var(--bg);
+      color: var(--text);
+      line-height: 1.55;
+    }
+
+    .page {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 40px 24px 72px;
+    }
+
+    header.hero {
+      background: linear-gradient(135deg, #10213f 0%, #243b6b 58%, #4f46e5 100%);
+      color: white;
+      border-radius: 28px;
+      padding: 38px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      position: relative;
+    }
+
+    header.hero::after {
+      content: "";
+      position: absolute;
+      inset: auto -90px -120px auto;
+      width: 320px;
+      height: 320px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.14);
+    }
+
+    h1, h2, h3 { line-height: 1.15; margin: 0; }
+    h1 { font-size: clamp(2rem, 5vw, 4rem); letter-spacing: -0.05em; }
+    h2 { font-size: 1.55rem; letter-spacing: -0.025em; margin-bottom: 16px; }
+    h3 { font-size: 1rem; margin-bottom: 8px; }
+    p { margin: 0 0 12px; }
+
+    .subtitle {
+      max-width: 790px;
+      margin-top: 18px;
+      color: rgba(255, 255, 255, 0.82);
+      font-size: 1.05rem;
+    }
+
+    .meta-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 26px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 999px;
+      padding: 7px 12px;
+      background: rgba(255, 255, 255, 0.14);
+      color: rgba(255, 255, 255, 0.92);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      font-size: 0.86rem;
+      white-space: nowrap;
+    }
+
+    .nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 22px 0 26px;
+      position: sticky;
+      top: 0;
+      z-index: 4;
+      padding: 14px 0;
+      backdrop-filter: blur(12px);
+    }
+
+    .nav a {
+      color: var(--text);
+      text-decoration: none;
+      background: rgba(255, 255, 255, 0.82);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 8px 13px;
+      font-weight: 650;
+      font-size: 0.9rem;
+    }
+
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 26px;
+      margin-top: 18px;
+      box-shadow: 0 8px 24px rgba(21, 32, 51, 0.045);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 16px;
+    }
+
+    .card {
+      background: var(--panel-soft);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+    }
+
+    .span-4 { grid-column: span 4; }
+    .span-6 { grid-column: span 6; }
+    .span-8 { grid-column: span 8; }
+    .span-12 { grid-column: span 12; }
+
+    .badge {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-weight: 750;
+      font-size: 0.76rem;
+      margin-bottom: 10px;
+    }
+    .blue { background: var(--blue-soft); color: var(--blue); }
+    .green { background: var(--green-soft); color: var(--green); }
+    .amber { background: var(--amber-soft); color: var(--amber); }
+    .purple { background: var(--purple-soft); color: var(--purple); }
+    .red { background: var(--red-soft); color: var(--red); }
+
+    ul, ol { margin: 10px 0 0; padding-left: 22px; }
+    li { margin: 7px 0; }
+    code {
+      background: #eef2f7;
+      border: 1px solid #dce5ef;
+      border-radius: 6px;
+      padding: 1px 5px;
+      font-size: 0.92em;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      align-items: stretch;
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .node {
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 16px;
+      min-height: 122px;
+    }
+    .arrow {
+      align-self: center;
+      color: var(--blue);
+      font-size: 1.7rem;
+      font-weight: 900;
+    }
+
+    .req {
+      border-left: 4px solid var(--blue);
+      background: #fbfdff;
+      border-radius: 14px;
+      padding: 16px 18px;
+      margin: 14px 0;
+    }
+    .req.backend { border-left-color: var(--purple); }
+    .scenario {
+      background: #f8fafc;
+      border: 1px dashed #cbd5e1;
+      border-radius: 12px;
+      padding: 11px 13px;
+      margin: 10px 0 0;
+      font-size: 0.94rem;
+    }
+
+    .task-list {
+      columns: 2;
+      column-gap: 32px;
+      padding-left: 0;
+      list-style: none;
+    }
+    .task-list li {
+      break-inside: avoid;
+      position: relative;
+      padding-left: 26px;
+      margin-bottom: 10px;
+    }
+    .task-list li::before {
+      content: "";
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--blue);
+      border-radius: 4px;
+      position: absolute;
+      left: 0;
+      top: 5px;
+      background: white;
+    }
+
+    .footer {
+      margin-top: 20px;
+      color: var(--muted);
+      font-size: 0.92rem;
+      text-align: center;
+    }
+
+    @media (max-width: 860px) {
+      .span-4, .span-6, .span-8 { grid-column: span 12; }
+      .flow { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); justify-self: center; }
+      .task-list { columns: 1; }
+      header.hero, section { padding: 22px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <h1>Policy Node Abstraction</h1>
+      <p class="subtitle">OpenSpec visualization for a unified DimOS manipulation policy node that consumes multi-camera images, joint state, and task text, then emits coordinator-compatible joint position commands through pluggable policy backends.</p>
+      <div class="meta-row">
+        <span class="pill">Change: <strong>policy-node-abstraction</strong></span>
+        <span class="pill">Status: <strong>4/4 artifacts complete</strong></span>
+        <span class="pill">Package: <strong>dimos.manipulation.policy</strong></span>
+        <span class="pill">Reference output: <strong>JointState.position</strong></span>
+      </div>
+    </header>
+
+    <nav class="nav" aria-label="Spec overview navigation">
+      <a href="#why">Why</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#requirements">Requirements</a>
+      <a href="#backends">Backends</a>
+      <a href="#risks">Risks</a>
+      <a href="#tasks">Tasks</a>
+    </nav>
+
+    <section id="why">
+      <h2>Why this change exists</h2>
+      <div class="grid">
+        <div class="card span-8">
+          <span class="badge blue">Problem</span>
+          <p>Robot learning policies need a first-class DimOS module abstraction so perception, state, and task-conditioned models can be composed into robot stacks without one-off glue code for each policy framework or robot.</p>
+          <p>DimOS already has typed streams and a centralized <code>ControlCoordinator</code>; this change standardizes how learned policies consume observations and emit coordinator-compatible commands.</p>
+        </div>
+        <div class="card span-4">
+          <span class="badge green">No breaking change</span>
+          <p>Existing coordinator, teleop, and blueprint behavior remain intact. The policy node publishes existing command message types rather than replacing coordinator APIs.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <h2>Proposed architecture</h2>
+      <div class="flow" aria-label="Policy node data flow">
+        <div class="node">
+          <span class="badge blue">Inputs</span>
+          <ul>
+            <li>Multi-camera <code>Image</code> streams</li>
+            <li>Latest <code>JointState</code></li>
+            <li>Plain <code>str</code> task description</li>
+          </ul>
+        </div>
+        <div class="arrow">→</div>
+        <div class="node">
+          <span class="badge purple">PolicyNode</span>
+          <ul>
+            <li>Builds <code>PolicyObservation</code></li>
+            <li>Runs selected backend at configured rate</li>
+            <li>Validates command mapping</li>
+          </ul>
+        </div>
+        <div class="arrow">→</div>
+        <div class="node">
+          <span class="badge green">Output</span>
+          <ul>
+            <li><code>JointState.name</code></li>
+            <li><code>JointState.position</code></li>
+            <li>Connects to <code>ControlCoordinator.joint_command</code></li>
+          </ul>
+        </div>
+      </div>
+      <div class="grid" style="margin-top:16px">
+        <div class="card span-6">
+          <h3>Core models</h3>
+          <ul>
+            <li><code>PolicyObservation</code>: camera-name keyed images, joint state, task text, timestamps, optional backend extras.</li>
+            <li><code>PolicyCommand</code>: tagged command model with initial joint-position output and explicit no-op handling.</li>
+            <li><code>PolicyNodeConfig</code>: backend name/config, policy rate, camera mapping, joint mapping, command mode, default task description.</li>
+          </ul>
+        </div>
+        <div class="card span-6">
+          <h3>Key design decisions</h3>
+          <ul>
+            <li>Keep framework tensors and feature dictionaries inside backend adapters.</li>
+            <li>Use existing coordinator-native command streams first.</li>
+            <li>Make action-space mapping explicit; never infer semantics from vector shape.</li>
+            <li>Keep model inference outside the coordinator tick loop.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="requirements">
+      <h2>Policy node requirements</h2>
+      <article class="req">
+        <h3>Unified observation inputs</h3>
+        <p>The system SHALL provide a policy node module under <code>dimos.manipulation.policy</code> that accepts multi-camera image inputs, latest robot joint state, and a plain string task description.</p>
+        <div class="scenario"><strong>Scenario:</strong> when images, <code>JointState</code>, and task text arrive, the node assembles a policy observation keyed by configured camera/source names.</div>
+        <div class="scenario"><strong>Scenario:</strong> task description is exposed as <code>str</code>, not a LangChain message or custom task message.</div>
+      </article>
+      <article class="req">
+        <h3>Coordinator-compatible joint position commands</h3>
+        <p>The system SHALL support joint position as the reference command output by publishing a <code>JointState</code> with <code>name</code> and <code>position</code> fields compatible with <code>ControlCoordinator.joint_command</code>.</p>
+        <div class="scenario"><strong>Scenario:</strong> backend joint targets become a matching <code>JointState</code> command.</div>
+        <div class="scenario"><strong>Scenario:</strong> no coordinator routing or arbitration changes are required.</div>
+      </article>
+      <article class="req">
+        <h3>Command validation</h3>
+        <p>The system SHALL validate command mode, joint names, and action dimensions before publishing commands.</p>
+        <div class="scenario"><strong>Scenario:</strong> missing, extra, or unmapped action values are rejected.</div>
+        <div class="scenario"><strong>Scenario:</strong> unsupported command families are not published.</div>
+      </article>
+      <article class="req">
+        <h3>Runtime cadence</h3>
+        <p>The system SHALL run policy inference at a configured policy rate using latest available observations and keep model inference outside the <code>ControlCoordinator</code> tick loop.</p>
+        <div class="scenario"><strong>Scenario:</strong> missing required observations cause the node to skip publishing for that step.</div>
+      </article>
+    </section>
+
+    <section id="backends">
+      <h2>Backend registration</h2>
+      <div class="grid">
+        <div class="card span-4">
+          <span class="badge purple">Registry</span>
+          <p>Backend names map to implementations through a shared registry. Unknown backend names fail startup with a clear error.</p>
+        </div>
+        <div class="card span-4">
+          <span class="badge blue">LeRobot</span>
+          <p>The <code>lerobot</code> backend adapts DimOS observations into LeRobot inference inputs, runs model selection/postprocessing, and converts outputs into <code>PolicyCommand</code>.</p>
+        </div>
+        <div class="card span-4">
+          <span class="badge amber">TestPolicy</span>
+          <p>The <code>test</code> backend emits deterministic sinusoidal joint position commands for configured joints without model files, GPUs, or external robot-learning dependencies.</p>
+        </div>
+      </div>
+
+      <article class="req backend">
+        <h3>Policy backend interface</h3>
+        <p>Backends receive <code>PolicyObservation</code> and return <code>PolicyCommand</code> or no-op. Framework-specific tensors, features, and robot action dictionaries remain behind adapter boundaries.</p>
+      </article>
+      <article class="req backend">
+        <h3>TestPolicy behavior</h3>
+        <p><code>TestPolicy</code> is configured with joint names, amplitude, frequency, phase, and optional center positions. It exercises the same registry and validation path as LeRobot.</p>
+      </article>
+    </section>
+
+    <section id="risks">
+      <h2>Risks and mitigations</h2>
+      <div class="grid">
+        <div class="card span-6"><strong>Action-space ambiguity</strong><br />Mitigation: explicit command mode and action-name mappings in <code>PolicyNodeConfig</code>.</div>
+        <div class="card span-6"><strong>Stale observations</strong><br />Mitigation: timestamp observations and no-op when required data is incomplete.</div>
+        <div class="card span-6"><strong>Heavy backend dependencies</strong><br />Mitigation: lazy/optional adapter imports, especially for LeRobot.</div>
+        <div class="card span-6"><strong>Unsafe test motion</strong><br />Mitigation: explicit low-amplitude <code>TestPolicy</code> parameters and controlled setup guidance.</div>
+        <div class="card span-6"><strong>Multi-camera complexity</strong><br />Mitigation: configured camera/source names and explicit backend feature-name mapping.</div>
+        <div class="card span-6"><strong>Inference latency</strong><br />Mitigation: policy node rate control, no coordinator tick-loop changes.</div>
+      </div>
+    </section>
+
+    <section id="tasks">
+      <h2>Implementation checklist</h2>
+      <ul class="task-list">
+        <li>Create <code>dimos.manipulation.policy</code> package and exports.</li>
+        <li>Define <code>PolicyObservation</code>, <code>PolicyCommand</code>, and <code>PolicyNodeConfig</code>.</li>
+        <li>Define <code>PolicyBackend</code> protocol.</li>
+        <li>Implement backend registry and register <code>lerobot</code> / <code>test</code>.</li>
+        <li>Implement dependency-free sinusoidal <code>TestPolicy</code>.</li>
+        <li>Implement lazy LeRobot backend adapter.</li>
+        <li>Implement <code>PolicyNode</code> typed inputs and multi-camera assembly.</li>
+        <li>Publish validated joint-position <code>JointState</code> outputs.</li>
+        <li>Add unit tests for registry, TestPolicy, observation assembly, and command validation.</li>
+        <li>Add example/test blueprint wiring <code>PolicyNode</code> to coordinator-compatible joint commands.</li>
+      </ul>
+    </section>
+
+    <p class="footer">Generated from <code>openspec/changes/policy-node-abstraction</code>. Source artifacts: proposal.md, design.md, specs, tasks.md.</p>
+  </main>
+</body>
+</html>

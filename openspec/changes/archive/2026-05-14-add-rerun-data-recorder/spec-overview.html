@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenSpec Overview: add-rerun-data-recorder</title>
+  <link rel="icon" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="%23121820"/><text x="32" y="41" text-anchor="middle" font-size="30" fill="%237dd3fc">R</text></svg>' />
+  <style>
+    :root { --bg:#0b1020; --panel:#121a2b; --panel2:#0f1727; --text:#e7eefc; --muted:#9db0d1; --accent:#7dd3fc; --ok:#34d399; --warn:#fbbf24; --border:#23324f; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:linear-gradient(180deg,#0b1020,#0d1427); color:var(--text); }
+    .wrap { max-width:1100px; margin:0 auto; padding:28px 20px 56px; }
+    .hero { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:20px; }
+    h1,h2,h3 { margin:0 0 12px; }
+    h1 { font-size:1.8rem; }
+    h2 { margin-top:26px; font-size:1.2rem; }
+    p, li { color:var(--muted); line-height:1.5; }
+    .badges { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+    .badge { border:1px solid var(--border); background:var(--panel2); border-radius:999px; padding:4px 10px; font-size:.82rem; color:var(--muted); }
+    .ok { color:var(--ok); border-color:#1d5e4b; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px; }
+    .card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:14px; }
+    .flow { display:grid; grid-template-columns:1fr auto 1fr auto 1fr; gap:8px; align-items:center; }
+    .node { padding:12px; border:1px solid var(--border); border-radius:10px; background:var(--panel2); text-align:center; }
+    .arrow { color:var(--accent); text-align:center; }
+    .req { border-left:3px solid var(--accent); padding-left:12px; margin:14px 0; }
+    code { color:#bae6fd; background:#0f2038; border:1px solid #1f395f; padding:1px 6px; border-radius:6px; }
+    .small { font-size:.9rem; }
+    @media (max-width: 800px) { .flow { grid-template-columns:1fr; } .arrow { transform:rotate(90deg); } }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <h1>OpenSpec Change: <code>add-rerun-data-recorder</code></h1>
+      <p class="small">Standalone visualization of proposal, design, requirements, and tasks.</p>
+      <div class="badges">
+        <span class="badge ok">Status: complete</span>
+        <span class="badge">Schema: spec-driven</span>
+        <span class="badge">Artifacts: proposal, design, specs, tasks</span>
+        <span class="badge">Surface: piper-data-collection</span>
+      </div>
+    </section>
+
+    <h2>Why this change</h2>
+    <div class="card">
+      <p>Current Piper teleop recording writes pickle-per-frame directories. The change moves collection to per-episode Rerun <code>.rrd</code> files so each episode is a direct training/review artifact, aligned with Rerun 0.32 dataset tooling and dataloader semantics.</p>
+      <p>Core intent: keep live viewer and on-disk recording independent while preserving converter parity and entity-path consistency.</p>
+    </div>
+
+    <h2>Architecture</h2>
+    <div class="card flow">
+      <div class="node">LCM Streams<br/><span class="small">camera + joint topics</span></div>
+      <div class="arrow">→</div>
+      <div class="node">RerunDataRecorder<br/><span class="small">full-rate, per-episode .rrd</span></div>
+      <div class="arrow">→</div>
+      <div class="node">Episode Files<br/><span class="small"><code>episode_&lt;NNN&gt;.rrd</code></span></div>
+    </div>
+    <div class="grid" style="margin-top:12px;">
+      <div class="card">
+        <h3>Decision highlights</h3>
+        <ul>
+          <li>Recorder is a standalone module; bridge remains live-viewer only.</li>
+          <li>Bridge file is intentionally left untouched; recorder duplicates small composition logic locally.</li>
+          <li>Episode rollover is explicit RPC plus Quest-button boundary module.</li>
+          <li>Viewer throttling must not affect recorder throughput.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Entity schema</h3>
+        <ul>
+          <li><code>/observation/camera/usb</code></li>
+          <li><code>/observation/state/&lt;joint_short_name&gt;</code></li>
+          <li><code>/action/&lt;joint_short_name&gt;</code></li>
+          <li><code>/meta/episode_id</code>, <code>/meta/episode_index</code>, <code>/meta/session_id</code>, optional <code>/meta/operator</code></li>
+        </ul>
+      </div>
+    </div>
+
+    <h2>Requirements (normative)</h2>
+    <div class="card">
+      <div class="req">
+        <strong>Per-episode recording:</strong>
+        <p>The blueprint <strong>SHALL</strong> write each demonstration episode to its own <code>.rrd</code> at <code>{data_dir}/piper_data_collection/&lt;session_name&gt;/episode_&lt;NNN&gt;.rrd</code>; session defaults to UTC <code>YYYYMMDDTHHMMSSZ</code>; episode counter is 1-indexed and zero-padded.</p>
+      </div>
+      <div class="req">
+        <strong>Episode rollover:</strong>
+        <p><strong>WHEN</strong> rollover button is pressed, recorder <strong>SHALL</strong> close current file and open next file; messages after boundary <strong>SHALL</strong> log only to the new episode.</p>
+      </div>
+      <div class="req">
+        <strong>Debounce and empty-file behavior:</strong>
+        <p><strong>WHEN</strong> events occur within 500ms, they <strong>SHALL</strong> be ignored and no extra empty file produced. <strong>WHEN</strong> rollover occurs before payload data, current episode file <strong>SHALL</strong> be removed.</p>
+      </div>
+      <div class="req">
+        <strong>Metadata:</strong>
+        <p>Each episode <strong>SHALL</strong> include static metadata entities for episode ID, episode index, and session ID; operator metadata is present only <strong>WHEN</strong> configured.</p>
+      </div>
+      <div class="req">
+        <strong>Module independence:</strong>
+        <p>Viewer and recorder <strong>SHALL</strong> be separate modules with independent streams/sinks. Viewer failures must not stop recording; recorder failures must not stop viewer operation.</p>
+      </div>
+    </div>
+
+    <h2>Risks and trade-offs</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Trade-offs accepted</h3>
+        <ul>
+          <li>No in-tree pickle→rrd migration.</li>
+          <li>No in-tree training example or catalog server in this change.</li>
+          <li>Raw image logging now; post-session <code>rerun rrd optimize</code> remains documented step.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Operational concerns</h3>
+        <ul>
+          <li>Rollover correctness under in-flight messages requires lock-safe close/open boundaries.</li>
+          <li>Recorder and bridge converter logic can drift; tests are specified to catch divergence.</li>
+        </ul>
+      </div>
+    </div>
+
+    <h2>Implementation checklist summary</h2>
+    <div class="card">
+      <ul>
+        <li>Build `RerunDataRecorder` module and config.</li>
+        <li>Mirror bridge conversion and entity-path logic locally.</li>
+        <li>Add episode open/close/rotate lifecycle and metadata logging.</li>
+        <li>Add recorder + integration tests (episode creation, rollover, metadata, viewer/recorder independence).</li>
+        <li>Add session path helpers and LeRobot path retargeting.</li>
+        <li>Wire `EpisodeBoundary` Quest button module.</li>
+        <li>Retire `PiperDataRecorder` path from blueprint and docs.</li>
+      </ul>
+    </div>
+  </main>
+</body>
+</html>

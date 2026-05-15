@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pink Teleop IK - OpenSpec Overview</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f4fb;
+      --panel: #ffffff;
+      --panel-soft: #f5eefc;
+      --ink: #201628;
+      --muted: #6f6178;
+      --line: #e4d9ed;
+      --pink: #db2777;
+      --pink-dark: #9d174d;
+      --pink-soft: #fce7f3;
+      --purple: #7c3aed;
+      --purple-soft: #ede9fe;
+      --blue: #2563eb;
+      --blue-soft: #dbeafe;
+      --green: #0f766e;
+      --green-soft: #ccfbf1;
+      --amber: #b45309;
+      --amber-soft: #fef3c7;
+      --shadow: 0 18px 45px rgba(80, 40, 90, 0.12);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 12% 0%, rgba(219, 39, 119, 0.18), transparent 28rem),
+        radial-gradient(circle at 88% 12%, rgba(124, 58, 237, 0.16), transparent 26rem),
+        var(--bg);
+      color: var(--ink);
+      line-height: 1.55;
+    }
+
+    .page { max-width: 1180px; margin: 0 auto; padding: 40px 24px 72px; }
+
+    header.hero {
+      background: linear-gradient(135deg, #831843 0%, #be185d 48%, #7c3aed 100%);
+      color: white;
+      border-radius: 30px;
+      padding: 40px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      position: relative;
+    }
+
+    header.hero::after {
+      content: "";
+      position: absolute;
+      right: -110px;
+      bottom: -130px;
+      width: 340px;
+      height: 340px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.14);
+    }
+
+    h1, h2, h3 { line-height: 1.15; margin: 0; }
+    h1 { max-width: 850px; font-size: clamp(2rem, 5vw, 4rem); letter-spacing: -0.05em; }
+    h2 { font-size: 1.45rem; letter-spacing: -0.02em; margin-bottom: 16px; }
+    h3 { font-size: 1rem; margin-bottom: 8px; }
+    p { margin: 0 0 12px; }
+    ul { margin: 0; padding-left: 1.1rem; }
+    li { margin: 6px 0; }
+
+    .subtitle {
+      max-width: 820px;
+      margin-top: 18px;
+      color: rgba(255, 255, 255, 0.84);
+      font-size: 1.05rem;
+    }
+
+    .meta-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 28px; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.15);
+      border: 1px solid rgba(255,255,255,0.22);
+      color: white;
+      padding: 8px 12px;
+      font-size: 0.88rem;
+      font-weight: 650;
+    }
+
+    .grid { display: grid; gap: 18px; margin-top: 22px; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: 22px;
+      box-shadow: 0 10px 26px rgba(80, 40, 90, 0.06);
+    }
+
+    .section { margin-top: 28px; }
+    .kicker {
+      text-transform: uppercase;
+      color: var(--pink-dark);
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      font-size: 0.74rem;
+      margin-bottom: 8px;
+    }
+    .muted { color: var(--muted); }
+    .tag {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 4px 10px;
+      background: var(--panel-soft);
+      color: var(--pink-dark);
+      font-weight: 700;
+      font-size: 0.78rem;
+      margin: 0 6px 6px 0;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 12px;
+      align-items: stretch;
+    }
+    .node {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 16px;
+      background: linear-gradient(180deg, #fff, #fff7fb);
+      min-height: 118px;
+      position: relative;
+    }
+    .node:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      right: -15px;
+      top: 42%;
+      color: var(--pink);
+      font-weight: 900;
+      z-index: 2;
+    }
+    .node strong { display: block; margin-bottom: 6px; }
+    .node small { color: var(--muted); }
+
+    .req {
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      gap: 12px;
+      padding: 14px 0;
+      border-top: 1px solid var(--line);
+    }
+    .req:first-of-type { border-top: 0; padding-top: 0; }
+    .num {
+      width: 34px;
+      height: 34px;
+      border-radius: 12px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 850;
+      color: var(--pink-dark);
+      background: var(--pink-soft);
+    }
+
+    .tasks { display: grid; gap: 12px; }
+    .taskgroup {
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 18px;
+      padding: 16px;
+    }
+    .taskgroup strong { color: var(--pink-dark); }
+
+    .callout {
+      border-radius: 22px;
+      padding: 20px;
+      border: 1px solid #f9a8d4;
+      background: linear-gradient(135deg, #fff1f7, #f5f3ff);
+    }
+    code {
+      background: #f8edf6;
+      border: 1px solid #edd6e7;
+      border-radius: 7px;
+      padding: 1px 6px;
+      font-size: 0.92em;
+    }
+    footer { margin-top: 30px; color: var(--muted); font-size: 0.9rem; }
+
+    @media (max-width: 900px) {
+      .grid.two, .grid.three, .flow { grid-template-columns: 1fr; }
+      .node:not(:last-child)::after { content: "↓"; right: 18px; top: auto; bottom: -18px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <h1>Pink Teleop IK for XArm7</h1>
+      <p class="subtitle">OpenSpec visualization for adding a Pink-backed teleoperation IK hierarchy: shared solver plumbing in <code>BasePinkIKTask</code>, first concrete implementation in <code>XArm7IKTask</code>, and right-controller-only XArm7 pose control through the existing <code>teleop_xarm</code> route.</p>
+      <div class="meta-row">
+        <span class="pill">Change: pink-teleop-task</span>
+        <span class="pill">Schema: spec-driven</span>
+        <span class="pill">Status: 4/4 artifacts complete</span>
+        <span class="pill">Ready for /opsx-apply</span>
+      </div>
+    </header>
+
+    <section class="grid three section">
+      <article class="card">
+        <div class="kicker">Why</div>
+        <h2>Move IK problem construction into Pink</h2>
+        <p class="muted">DimOS teleop currently uses a lightweight Pinocchio IK path. Pink provides task-based differential IK with weighted frame tasks and a QP solver loop, giving a stronger base for robot-specific IK tasks.</p>
+      </article>
+      <article class="card">
+        <div class="kicker">First milestone</div>
+        <h2>XArm7 only</h2>
+        <p class="muted">The implementation starts with <code>XArm7IKTask</code>. It consumes only the right controller pose and keeps the current <code>teleop_xarm</code> routing contract.</p>
+      </article>
+      <article class="card">
+        <div class="kicker">Not yet</div>
+        <h2>Dual arm deferred</h2>
+        <p class="muted">Dual-arm coordinated IK remains the motivation, but it is deferred to a later subclass because combined robot models and multi-target routing need robot-specific construction.</p>
+      </article>
+    </section>
+
+    <section class="card section">
+      <div class="kicker">Runtime flow</div>
+      <h2>Right-controller delta to XArm7 joint command</h2>
+      <div class="flow">
+        <div class="node"><strong>Quest right controller</strong><small>WebXR pose becomes robot-frame delta while engaged.</small></div>
+        <div class="node"><strong>ArmTeleopModule</strong><small>Publishes <code>PoseStamped</code> with <code>frame_id="teleop_xarm"</code>.</small></div>
+        <div class="node"><strong>ControlCoordinator</strong><small>Routes the command to the XArm7 Pink task by route key.</small></div>
+        <div class="node"><strong>XArm7IKTask</strong><small>Applies delta to captured EE baseline and updates Pink <code>FrameTask</code>.</small></div>
+        <div class="node"><strong>JointCommandOutput</strong><small>Integrated Pink result passes safety checks and enters arbitration.</small></div>
+      </div>
+    </section>
+
+    <section class="grid two section">
+      <article class="card">
+        <div class="kicker">Architecture</div>
+        <h2>Hierarchical task design</h2>
+        <p><span class="tag">BasePinkIKTask</span><span class="tag">XArm7IKTask</span><span class="tag">future subclasses</span></p>
+        <ul>
+          <li><strong>BasePinkIKTask</strong> owns shared solver setup, current-joint extraction, target-update hooks, joint-delta safety, and output generation.</li>
+          <li><strong>SingleFramePinkIKTask</strong> owns single end-effector target state, timeout handling, and baseline capture.</li>
+          <li><strong>XArm7IKTask</strong> owns XArm7 model loading, end-effector frame task construction, right-controller target updates, and XArm7 resource claims.</li>
+          <li><strong>Future subclasses</strong> can add XArm6, Piper, or dual-arm combined-model construction without overloading the first task.</li>
+        </ul>
+      </article>
+
+      <article class="card">
+        <div class="kicker">Controller contract</div>
+        <h2>Delta, not absolute pose</h2>
+        <ul>
+          <li><code>PoseStamped.position</code> and <code>orientation</code> are robot-frame controller deltas from engagement.</li>
+          <li>The XArm7 task captures the current end-effector pose as its baseline on right-controller engage.</li>
+          <li>The Pink frame target is baseline plus controller delta.</li>
+          <li>Disengage/re-engage clears and recaptures the baseline.</li>
+        </ul>
+      </article>
+    </section>
+
+    <section class="grid two section">
+      <article class="card">
+        <div class="kicker">Requirements</div>
+        <h2>What must be true</h2>
+        <div class="req"><span class="num">1</span><div><strong>Shared Pink IK base</strong><br /><span class="muted">Uses coordinator timing, emits coordinator-compatible commands, and rejects unsafe joint deltas.</span></div></div>
+        <div class="req"><span class="num">2</span><div><strong>XArm7-specific Pink task</strong><br /><span class="muted">Loads XArm7 model, validates joint/frame configuration, and owns XArm7 resources.</span></div></div>
+        <div class="req"><span class="num">3</span><div><strong>Right-controller-only input</strong><br /><span class="muted">Keeps <code>teleop_xarm</code> compatibility and does not require left-controller data.</span></div></div>
+        <div class="req"><span class="num">4</span><div><strong>Safe stale-state behavior</strong><br /><span class="muted">Missing joints, timeout, or solver failure produce no command rather than unsafe motion.</span></div></div>
+        <div class="req"><span class="num">5</span><div><strong>Explicit Pink dependency</strong><br /><span class="muted">Adds <code>pin-pink</code> and a deterministic QP solver path.</span></div></div>
+      </article>
+
+      <article class="card">
+        <div class="kicker">Implementation checklist</div>
+        <h2>Task groups</h2>
+        <div class="tasks">
+          <div class="taskgroup"><strong>1. Dependencies and module structure</strong><br /><span class="muted">Add Pink, typing config, and task module exports.</span></div>
+          <div class="taskgroup"><strong>2. Shared Pink IK base task</strong><br /><span class="muted">Implement lifecycle, target state, solver loop, and safety checks.</span></div>
+          <div class="taskgroup"><strong>3. XArm7 Pink IK task</strong><br /><span class="muted">Construct XArm7 frame task and right-controller target updates.</span></div>
+          <div class="taskgroup"><strong>4. Coordinator and blueprint integration</strong><br /><span class="muted">Add XArm7 Pink task type and preserve <code>teleop_xarm</code> routing.</span></div>
+          <div class="taskgroup"><strong>5. Tests and validation</strong><br /><span class="muted">Cover base behavior, XArm7 construction, routing, and manual QA.</span></div>
+        </div>
+      </article>
+    </section>
+
+    <section class="callout section">
+      <div class="kicker">Key decision</div>
+      <h2>Do not generalize too early</h2>
+      <p>The first implementation is intentionally narrow: XArm7, right controller, one Pink <code>FrameTask</code>, existing route key. The base class captures only proven shared behavior so future robot-specific tasks can extend it without forcing dual-arm complexity into the first milestone.</p>
+    </section>
+
+    <footer>
+      Generated from <code>proposal.md</code>, <code>design.md</code>, <code>specs/pink-teleop-ik/spec.md</code>, and <code>tasks.md</code> for <code>openspec/changes/pink-teleop-task</code>.
+    </footer>
+  </main>
+</body>
+</html>

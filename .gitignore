@@ -81,3 +81,8 @@ htmlcov/
 
 # Memory2 autorecord
 recording*.db
+
+# oh-my-openagent
+.sisyphus
+
+.playwright-mcp
