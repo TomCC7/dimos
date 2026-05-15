@@ -43,3 +43,28 @@ The system SHALL run policy inference at a configured policy rate using latest a
 #### Scenario: Missing observation data
 - **WHEN** required observation inputs are not available for a policy step
 - **THEN** the policy node SHALL avoid publishing a new command for that step
+
+### Requirement: Teleop preempts policy commands
+The system SHALL ensure that any teleop control task sharing joints with the policy node has a higher coordinator arbitration priority than the policy's streaming servo task, so that engaged teleop always wins per-joint arbitration over policy output.
+
+#### Scenario: Teleop engaged on overlapping joints
+- **WHEN** a teleop task is engaged on joints that the policy node is also publishing commands for
+- **THEN** the coordinator SHALL route the teleop task's output to those joints
+- **AND** the policy node's commands for the same joints SHALL be ignored by per-joint arbitration
+
+#### Scenario: Blueprint enforces priority invariant
+- **WHEN** a policy node blueprint helper is constructed alongside a teleop task on overlapping joints
+- **THEN** the helper SHALL configure the policy's streaming servo task with a lower priority than the teleop task, or SHALL fail to build with an error identifying the violating tasks
+
+### Requirement: Policy node suspends and resets on teleop engagement
+The system SHALL subscribe the policy node to the same `buttons` stream that drives teleop engage/disengage and SHALL suspend command publication and reset the backend while teleop is engaged on overlapping joints.
+
+#### Scenario: Teleop engagement suspends publication and resets backend
+- **WHEN** the `buttons` input indicates teleop has engaged on joints that the policy node controls
+- **THEN** the policy node SHALL stop publishing coordinator commands for those joints
+- **AND** SHALL call `backend.reset()` so that any buffered actions, action chunks, or recurrent state are discarded
+
+#### Scenario: Teleop disengagement resumes from fresh inference
+- **WHEN** the `buttons` input indicates teleop has disengaged from joints that the policy node controls
+- **THEN** the policy node SHALL resume publishing commands using a fresh inference pass against the current observation
+- **AND** SHALL NOT replay any actions that were buffered before teleop engaged

@@ -22,6 +22,24 @@ The system SHALL define a backend interface that receives the policy node observ
 - **WHEN** a backend uses framework-specific preprocessing, inference, or postprocessing
 - **THEN** those framework-specific data structures SHALL remain inside the backend implementation boundary
 
+### Requirement: Backends expose a reset hook for preemption and chunk invalidation
+The system SHALL require every policy backend to expose a `reset()` method that clears any buffered action chunk, cached recurrent state, or queued commands, so that the next `select_action` call computes a fresh action from the next observation.
+
+#### Scenario: Reset discards buffered action chunks
+- **WHEN** a backend has buffered a multi-step action chunk from a previous `select_action` call
+- **AND** the policy node invokes `backend.reset()`
+- **THEN** the backend SHALL discard the buffered chunk
+- **AND** the next call to `select_action` SHALL produce an action computed from the next observation rather than the discarded buffer
+
+#### Scenario: Reset clears recurrent or hidden state
+- **WHEN** a backend maintains recurrent, history, or hidden state across `select_action` calls
+- **AND** the policy node invokes `backend.reset()`
+- **THEN** the backend SHALL reinitialize that state so subsequent inferences do not depend on observations from before the reset
+
+#### Scenario: TestPolicy reset is well-defined
+- **WHEN** the policy node invokes `reset()` on the `TestPolicy` backend
+- **THEN** the backend SHALL deterministically restart its sinusoidal trajectory (e.g., reset the phase clock) without erroring
+
 ### Requirement: LeRobot backend is registered
 The system SHALL register a LeRobot backend that can adapt policy node observations into LeRobot inference inputs and adapt LeRobot outputs into policy commands.
 

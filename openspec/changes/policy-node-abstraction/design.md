@@ -80,6 +80,31 @@ Alternatives considered:
 - Put sinusoidal playback in a separate demo module: rejected because it would not exercise the backend registration path.
 - Mock the backend only in tests: rejected because operators also need a runnable backend for manual wiring checks and examples.
 
+### Teleop always preempts policy commands
+
+When a teleop task and a policy node share joints on the same `ControlCoordinator`, the teleop task SHALL have a higher arbitration priority than the policy's streaming servo task so that engaged teleop always wins per-joint arbitration. Blueprint helpers that wire a policy node alongside teleop are responsible for enforcing this invariant (lower-priority policy servo task by construction, or a build-time error).
+
+Rationale: `ControlCoordinator` arbitrates per joint by priority, and `TeleopIKTask` / `BasePinkIKTask` become active on engage-button frames. Without a configured priority gap, two same-priority claimers silently fight, which is unsafe for a human-in-the-loop preempt.
+
+Alternatives considered:
+
+- Introduce a coordinator-level "teleop override" mode flag that bypasses arbitration: rejected because per-joint priority already expresses the relationship and a global override would conflict with multi-arm setups where only one arm is teleoperated.
+- Let operators pick priorities freely: rejected because the safety guarantee should not depend on a configuration choice that is easy to invert.
+
+### Policy node resets when teleop takes over
+
+The policy node SHALL subscribe to the same `buttons` stream that drives teleop engage/disengage. When buttons indicate teleop is engaged on overlapping joints, the policy node SHALL suspend command publication and call `backend.reset()`; when buttons indicate disengage, the node SHALL resume by running a fresh inference pass against the current observation. The backend protocol SHALL therefore define a `reset()` hook that clears any buffered action chunk, recurrent state, or queued commands.
+
+Rationale: Priority arbitration alone is insufficient — even when teleop wins, the policy keeps publishing and the servo task's `_target` keeps getting overwritten, so the moment teleop disengages the servo fires the policy's last stale command. Policies that buffer multi-step action chunks (e.g., LeRobot's diffusion/action-chunk pattern) make this worse: a chunk computed before teleop engaged is no longer aligned with the post-teleop world state. Resetting the backend on takeover guarantees the policy starts from the human-handed-back state on the next tick.
+
+Resume policy is "press-and-hold mirror": as soon as `buttons` reports disengage, the policy may resume on the next observation tick. The configurable `policy_rate` plus a fresh inference call mute the handoff jerk. A separate "policy re-engage" button is deferred until a use case requires it.
+
+Alternatives considered:
+
+- New `Coordinator.control_authority: Out[ControlAuthority]` output listing the winning task per joint: deferred because it expands coordinator scope and the `buttons` stream is already sufficient for the engage/disengage case.
+- Infer preemption from the existing `desired_joint_action` output by checking whether the policy's published values appear in the post-arbitration action: rejected because it is a leaky inference and would silently break if multiple tasks happen to converge on similar values.
+- Backend keeps state across preemption: rejected because action chunks and recurrent state computed before teleop are no longer aligned with the post-teleop world.
+
 ### Keep safety and timing boundaries at the DimOS node layer
 
 The policy node owns rate control, latest-observation buffering, command validation, and lifecycle cleanup. Backend adapters own model loading and framework conversion only.
@@ -111,6 +136,8 @@ Alternatives considered:
 - Multiple camera inputs are harder than scalar streams → Use configured camera/source names in the observation assembly and keep backend feature-name mapping explicit.
 - Inference latency may conflict with control timing → Run policy inference at the configured policy rate and publish coordinator-native commands without modifying the coordinator tick loop.
 - A new `RobotCommand` type may still be useful later → Start with existing coordinator-native outputs, then revisit a public command union only if multiple consumers need a single transport type.
+- Stale policy commands fire when teleop disengages → Subscribe the policy node to `buttons`, suspend publication on engage, call `backend.reset()` to discard buffered chunks/recurrent state, and resume only with a fresh inference pass on disengage.
+- Same-priority teleop and policy claimers silently fight → Blueprint helpers SHALL configure teleop with a higher priority than the policy's servo task or fail to build.
 
 ## Migration Plan
 

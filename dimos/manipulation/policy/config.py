@@ -1,0 +1,93 @@
+# Copyright 2026 Dimensional Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Configuration for the policy node module."""
+
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import Field, model_validator
+
+from dimos.core.module import ModuleConfig
+
+# Command families the node may publish.
+CommandMode = Literal["joint_position"]
+
+# Slot names on `PolicyNode` that may be wired to camera streams. Kept
+# in sync with the `In[Image]` annotations on the node class.
+ALLOWED_CAMERA_SLOTS: tuple[str, ...] = ("image", "image_aux1", "image_aux2")
+
+
+class PolicyNodeConfig(ModuleConfig):
+    """Configuration for `PolicyNode`.
+
+    Attributes:
+        backend: Registered backend name (e.g., ``"test"``, ``"lerobot"``).
+        backend_config: Free-form dict passed to the backend factory.
+        policy_rate: Inference rate in Hz. Inference is run independently of
+            the `ControlCoordinator` tick loop.
+        joint_names: Coordinator-native joint names the node publishes
+            commands for. The backend's `JointPositionCommand` joint names
+            MUST match this list (after the optional `joint_name_map`).
+        joint_name_map: Optional mapping from backend-emitted joint names
+            to coordinator-native joint names. Empty by default — backend
+            joint names are used as-is.
+        camera_sources: Maps each `In[Image]` slot on the node (e.g.,
+            ``"image"``, ``"image_aux1"``, ``"image_aux2"``) to the camera
+            key the backend expects in `PolicyObservation.images`. Slots not
+            listed here are ignored.
+        enabled_command_modes: Command families the node will publish.
+            Backend output in any other family is rejected.
+        default_task: Default task description used when no upstream value
+            has been seen on the `task_description` input.
+        teleop_engage_buttons: `Buttons` field names whose `True` value is
+            treated as "teleop engaged on this node's joints". When any of
+            these is high, command publication is suspended and
+            `backend.reset()` is called on the engage edge.
+        observation_max_age: Max age (seconds) of the latest joint_state
+            tolerated before the node skips a step. ``0.0`` disables the
+            check.
+    """
+
+    backend: str = "test"
+    backend_config: dict[str, Any] = Field(default_factory=lambda: {})
+    policy_rate: float = 10.0
+    joint_names: list[str] = Field(default_factory=lambda: [])
+    joint_name_map: dict[str, str] = Field(default_factory=lambda: {})
+    camera_sources: dict[str, str] = Field(default_factory=lambda: {"image": "main"})
+    enabled_command_modes: list[CommandMode] = Field(
+        default_factory=lambda: ["joint_position"]  # type: ignore[arg-type]
+    )
+    default_task: str = ""
+    teleop_engage_buttons: list[str] = Field(
+        default_factory=lambda: ["left_primary", "right_primary"]
+    )
+    observation_max_age: float = 0.0
+
+    @model_validator(mode="after")
+    def _validate_camera_and_command_modes(self) -> PolicyNodeConfig:
+        bad_slots = [s for s in self.camera_sources if s not in ALLOWED_CAMERA_SLOTS]
+        if bad_slots:
+            raise ValueError(
+                "PolicyNodeConfig.camera_sources: unknown image slot(s) "
+                f"{bad_slots}. Available slots: {list(ALLOWED_CAMERA_SLOTS)}"
+            )
+        bad_modes = [m for m in self.enabled_command_modes if m not in ("joint_position",)]
+        if bad_modes:
+            raise ValueError(f"PolicyNodeConfig.enabled_command_modes: unsupported {bad_modes}")
+        return self
+
+
+__all__ = ["ALLOWED_CAMERA_SLOTS", "CommandMode", "PolicyNodeConfig"]
