@@ -55,10 +55,19 @@ class PolicyNodeConfig(ModuleConfig):
         teleop_engage_buttons: `Buttons` field names whose `True` value is
             treated as "teleop engaged on this node's joints". When any of
             these is high, command publication is suspended and
-            `backend.reset()` is called on the engage edge.
+            `backend.reset()` is called on the engage edge. When non-empty,
+            the `buttons` subscription is a hard requirement of `start()`
+            (subscription failure aborts module startup) and publication is
+            additionally gated on having received at least one `Buttons`
+            message.
         observation_max_age: Max age (seconds) of the latest joint_state
             tolerated before the node skips a step. ``0.0`` disables the
             check.
+        buttons_grace_period: Seconds to wait after `start()` for the first
+            `Buttons` message before logging a warning each tick. Applies
+            only when `teleop_engage_buttons` is non-empty. Publication
+            remains suppressed until the first message arrives regardless
+            of this value.
     """
 
     backend: str = "test"
@@ -75,6 +84,7 @@ class PolicyNodeConfig(ModuleConfig):
         default_factory=lambda: ["left_primary", "right_primary"]
     )
     observation_max_age: float = 0.0
+    buttons_grace_period: float = 2.0
 
     @model_validator(mode="after")
     def _validate_camera_and_command_modes(self) -> PolicyNodeConfig:

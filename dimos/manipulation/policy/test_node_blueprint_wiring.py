@@ -102,6 +102,12 @@ def test_policy_publishes_joint_state_consumable_by_servo_task(policy_node):
 
     policy_node.joint_command.subscribe(_coord_route)
 
+    # Enable rollout (off by default since policy-rollout-deployment) so
+    # _tick_once is allowed to publish. Also satisfy the first-Buttons gate
+    # since the default config requires a Buttons message before publishing.
+    policy_node._rollout_enabled = True
+    policy_node._first_buttons_received = True
+
     # Drive a tick: the published JointState must round-trip into the
     # servo task as a position target the coordinator would write to
     # hardware on the next tick.

@@ -25,11 +25,22 @@ from __future__ import annotations
 import pytest
 
 from dimos.control.coordinator import TaskConfig
-from dimos.manipulation.policy import policy_servo_task_config
+from dimos.manipulation.policy import policy_engage_buttons, policy_servo_task_config
 
 
-def _teleop(name: str, joints: list[str], priority: int = 50) -> TaskConfig:
-    return TaskConfig(name=name, type="piper_pink_ik", joint_names=joints, priority=priority)
+def _teleop(
+    name: str,
+    joints: list[str],
+    priority: int = 50,
+    hand: str | None = None,
+) -> TaskConfig:
+    return TaskConfig(
+        name=name,
+        type="piper_pink_ik",
+        joint_names=joints,
+        priority=priority,
+        hand=hand,  # type: ignore[arg-type]
+    )
 
 
 def test_auto_derives_priority_below_overlapping_teleop():
@@ -131,3 +142,51 @@ def test_non_teleop_task_does_not_constrain_priority():
 def test_empty_joint_names_rejected():
     with pytest.raises(ValueError, match="joint_names"):
         policy_servo_task_config(name="policy", joint_names=[])
+
+
+# ── policy_engage_buttons ────────────────────────────────────────────────
+
+
+def test_engage_buttons_right_hand_overlap_only():
+    right = _teleop("teleop_right", joints=["arm/j1"], hand="right")
+    left = _teleop("teleop_left", joints=["other/j1"], hand="left")
+    assert policy_engage_buttons(["arm/j1"], [right, left]) == ["right_primary"]
+
+
+def test_engage_buttons_both_hands_overlap():
+    right = _teleop("teleop_right", joints=["right_arm/j1"], hand="right")
+    left = _teleop("teleop_left", joints=["left_arm/j1"], hand="left")
+    assert policy_engage_buttons(["right_arm/j1", "left_arm/j1"], [right, left]) == [
+        "left_primary",
+        "right_primary",
+    ]
+
+
+def test_engage_buttons_no_overlap_returns_empty():
+    t = _teleop("teleop_other", joints=["other/j1"], hand="right")
+    assert policy_engage_buttons(["arm/j1"], [t]) == []
+
+
+def test_engage_buttons_skips_tasks_with_no_hand():
+    # An overlapping teleop task with hand=None contributes no button.
+    t_no_hand = _teleop("teleop_no_hand", joints=["arm/j1"], hand=None)
+    assert policy_engage_buttons(["arm/j1"], [t_no_hand]) == []
+
+
+def test_engage_buttons_dedupes_repeated_hand():
+    t1 = _teleop("teleop_right_a", joints=["arm/j1"], hand="right")
+    t2 = _teleop("teleop_right_b", joints=["arm/j2"], hand="right")
+    assert policy_engage_buttons(["arm/j1", "arm/j2"], [t1, t2]) == ["right_primary"]
+
+
+def test_engage_buttons_ignores_non_teleop_task_types():
+    # Trajectory tasks aren't button-triggered, so they don't contribute
+    # even with overlapping joints and a configured hand.
+    traj = TaskConfig(
+        name="traj",
+        type="trajectory",
+        joint_names=["arm/j1"],
+        priority=10,
+        hand="right",  # type: ignore[arg-type]
+    )
+    assert policy_engage_buttons(["arm/j1"], [traj]) == []

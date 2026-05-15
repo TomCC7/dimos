@@ -43,7 +43,10 @@ from __future__ import annotations
 from dimos.manipulation.policy import backends as _backends  # noqa: F401
 from dimos.manipulation.policy.backend import PolicyBackend
 from dimos.manipulation.policy.backends.test import TestPolicy
-from dimos.manipulation.policy.blueprint import policy_servo_task_config
+from dimos.manipulation.policy.blueprint import (
+    policy_engage_buttons,
+    policy_servo_task_config,
+)
 from dimos.manipulation.policy.command import (
     JointPositionCommand,
     NoOpCommand,
@@ -64,6 +67,7 @@ from dimos.manipulation.policy.registry import (
     is_registered,
     register_backend,
 )
+from dimos.manipulation.policy.rollout_toggle import RolloutToggle, RolloutToggleConfig
 
 __all__ = [
     "BackendFactory",
@@ -78,10 +82,13 @@ __all__ = [
     "PolicyNodeConfig",
     "PolicyObservation",
     "RobotContract",
+    "RolloutToggle",
+    "RolloutToggleConfig",
     "TestPolicy",
     "available_backends",
     "create_backend",
     "is_registered",
+    "policy_engage_buttons",
     "policy_servo_task_config",
     "register_backend",
 ]

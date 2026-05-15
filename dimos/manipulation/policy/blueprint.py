@@ -86,6 +86,27 @@ def policy_servo_task_config(
     )
 
 
+def policy_engage_buttons(
+    joint_names: Sequence[str],
+    teleop_tasks: Sequence[TaskConfig],
+) -> list[str]:
+    """Derive `PolicyNode.teleop_engage_buttons` from overlapping teleop tasks.
+
+    For each teleop task whose joints overlap `joint_names`, map its
+    `hand` field (`"left"` / `"right"`) to the corresponding `_primary`
+    button name. Returns a sorted, de-duplicated list. Tasks with
+    `hand=None` are skipped.
+
+    This is the canonical way to wire the policy node's preempt buttons
+    in a deployment blueprint: the engage button set is then guaranteed
+    to match the teleop tasks that can actually preempt the policy on
+    its joints (no over-eager preempt from an unrelated arm's button).
+    """
+    overlapping = _overlapping_teleop_tasks(joint_names, teleop_tasks)
+    hands = {t.hand for t in overlapping if t.hand is not None}
+    return sorted(f"{h}_primary" for h in hands)
+
+
 def _overlapping_teleop_tasks(
     joint_names: Sequence[str], teleop_tasks: Sequence[TaskConfig]
 ) -> list[TaskConfig]:
@@ -97,4 +118,4 @@ def _overlapping_teleop_tasks(
     ]
 
 
-__all__ = ["policy_servo_task_config"]
+__all__ = ["policy_engage_buttons", "policy_servo_task_config"]

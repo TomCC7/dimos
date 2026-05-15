@@ -23,6 +23,7 @@ import pytest
 from dimos.manipulation.policy import TestPolicy, create_backend
 from dimos.manipulation.policy.command import JointPositionCommand
 from dimos.manipulation.policy.observation import PolicyObservation
+from dimos.msgs.sensor_msgs.JointState import JointState
 
 
 def test_sample_at_zero_is_center_for_zero_phase():
@@ -97,3 +98,93 @@ def test_amplitude_length_mismatch_raises():
 def test_zero_joint_names_rejected():
     with pytest.raises(ValueError, match="at least one joint"):
         TestPolicy(joint_names=[])
+
+
+# ── center auto-capture from observation (no explicit `center` arg) ───────
+
+
+def _obs(name, position) -> PolicyObservation:
+    return PolicyObservation(joint_state=JointState(name=list(name), position=list(position)))
+
+
+def test_center_auto_captured_from_first_observation():
+    policy = TestPolicy(joint_names=["j1", "j2"], amplitude=0.0, frequency=1.0)
+    cmd = policy.select_action(_obs(["j1", "j2"], [0.7, -0.3]))
+    # amplitude=0 → output equals captured center
+    assert cmd.positions == pytest.approx((0.7, -0.3), abs=1e-9)
+
+
+def test_center_recaptured_on_reset():
+    policy = TestPolicy(joint_names=["j1"], amplitude=0.0, frequency=1.0)
+    policy.select_action(_obs(["j1"], [0.5]))
+    policy.reset()
+    cmd = policy.select_action(_obs(["j1"], [-0.2]))
+    assert cmd.positions == pytest.approx((-0.2,), abs=1e-9)
+
+
+def test_center_not_recaptured_when_explicit_center_provided():
+    """Static-center mode: callers that pass `center=` get the legacy
+    open-loop behavior — center stays fixed across reset()."""
+    policy = TestPolicy(joint_names=["j1"], amplitude=0.0, frequency=1.0, center=[0.1])
+    cmd = policy.select_action(_obs(["j1"], [9.9]))
+    assert cmd.positions == pytest.approx((0.1,), abs=1e-9)
+    policy.reset()
+    cmd = policy.select_action(_obs(["j1"], [-9.9]))
+    assert cmd.positions == pytest.approx((0.1,), abs=1e-9)
+
+
+def test_center_capture_falls_back_when_joint_state_missing():
+    """No `joint_state` in the observation → stay dirty, emit zero center
+    (the pre-capture default) without raising."""
+    policy = TestPolicy(joint_names=["j1"], amplitude=0.0, frequency=1.0)
+    cmd = policy.select_action(PolicyObservation())  # no joint_state
+    assert cmd.positions == pytest.approx((0.0,), abs=1e-9)
+    # Once a real observation arrives, the center is captured.
+    cmd2 = policy.select_action(_obs(["j1"], [0.42]))
+    assert cmd2.positions == pytest.approx((0.42,), abs=1e-9)
+
+
+def test_first_sample_after_capture_equals_observation_pose_under_non_zero_phase():
+    """Regression: with non-zero phase the open-loop formula
+    ``center + amplitude*sin(2π·f·t + phase)`` would emit ``center +
+    amplitude*sin(phase)`` at t=0 — a jump of up to ``amplitude`` from the
+    captured pose. The center adjustment ensures position(0) ≡ captured pose.
+    """
+    policy = TestPolicy(
+        joint_names=["j1", "j2"],
+        amplitude=0.5,
+        frequency=1.0,
+        phase=[math.pi / 2, math.pi],  # would jump by amplitude*sin(phase)
+    )
+    cmd = policy.select_action(_obs(["j1", "j2"], [0.3, -0.7]))
+    # Tolerance covers the few µs between t0 reset and sample_at; with
+    # amplitude=0.5 and freq=1, that's bounded by 2π·1·1e-5·0.5 ≈ 3e-5 rad.
+    assert cmd.positions[0] == pytest.approx(0.3, abs=1e-3)
+    assert cmd.positions[1] == pytest.approx(-0.7, abs=1e-3)
+
+
+def test_first_sample_after_reset_equals_post_reset_observation_pose():
+    """End-to-end of the engage→disengage scenario: capture pose A, then
+    reset (simulating teleop engage), then call select_action with pose B
+    (simulating post-teleop). First sample equals B, not A."""
+    policy = TestPolicy(
+        joint_names=["j1"],
+        amplitude=0.3,
+        frequency=0.5,
+        phase=math.pi / 3,
+    )
+    policy.select_action(_obs(["j1"], [0.1]))  # capture pose A=0.1
+    policy.reset()  # simulate teleop engage
+    cmd = policy.select_action(_obs(["j1"], [0.85]))  # post-teleop pose B
+    assert cmd.positions[0] == pytest.approx(0.85, abs=1e-3)
+
+
+def test_center_capture_falls_back_when_joint_missing_from_state():
+    """Observation present but missing one of the configured joints →
+    stay dirty, emit zero for that joint (rather than raise)."""
+    policy = TestPolicy(joint_names=["j1", "j2"], amplitude=0.0, frequency=1.0)
+    cmd = policy.select_action(_obs(["j1"], [0.3]))  # j2 missing
+    assert cmd.positions == pytest.approx((0.0, 0.0), abs=1e-9)
+    # Once both joints are present, both centers are captured.
+    cmd2 = policy.select_action(_obs(["j1", "j2"], [0.3, -0.1]))
+    assert cmd2.positions == pytest.approx((0.3, -0.1), abs=1e-9)

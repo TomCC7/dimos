@@ -355,3 +355,102 @@ def test_simulation_xarm7_teleop_uses_mujoco_without_manipulation_preview() -> N
         assert _xarm7_adapter_type(control_blueprints) == "sim_mujoco"
         assert "MujocoSimModule" in _module_names(control_blueprints.coordinator_teleop_xarm7)
         assert "ManipulationModule" not in _module_names(quest_blueprints.teleop_quest_xarm7)
+
+
+# ── teleop_quest_piper_policy (deployment blueprint) ─────────────────────
+
+
+def test_piper_policy_blueprint_composes_teleop_and_policy_modules() -> None:
+    """The deployment blueprint wires teleop + camera + policy + rollout
+    toggle on the same coordinator, with no data-collection modules.
+    """
+    with _teleop_blueprints(simulation=False, xarm7_ip="192.168.1.10", can_port=None) as (
+        _control_blueprints,
+        quest_blueprints,
+    ):
+        names = _module_names(quest_blueprints.teleop_quest_piper_policy)
+        for required in (
+            "ArmTeleopModule",
+            "ControlCoordinator",
+            "CameraModule",
+            "PolicyNode",
+            "RolloutToggle",
+            "ManipulationModule",
+        ):
+            assert required in names, (required, names)
+        # No data-collection modules in this blueprint.
+        assert "RerunDataRecorder" not in names
+        assert "EpisodeBoundary" not in names
+
+
+def test_piper_policy_coordinator_includes_servo_task_below_pink_ik_priority() -> None:
+    """The policy servo task must claim the Piper full joint set and have
+    a priority strictly less than the Pink IK teleop task's priority.
+    """
+    with _teleop_blueprints(simulation=False, xarm7_ip="192.168.1.10", can_port=None) as (
+        control_blueprints,
+        _quest_blueprints,
+    ):
+        coord_atom = next(
+            atom
+            for atom in control_blueprints.coordinator_teleop_piper_with_policy.blueprints
+            if atom.module is ControlCoordinator
+        )
+        tasks = list(coord_atom.kwargs["tasks"])
+        pink_task = next(t for t in tasks if t.type == "single_arm_pink_ik")
+        servo_tasks = [t for t in tasks if t.type == "servo"]
+        assert len(servo_tasks) == 1, tasks
+        servo = servo_tasks[0]
+        assert servo.priority < pink_task.priority
+        # Servo task claims arm joints + gripper.
+        assert "arm/gripper" in servo.joint_names
+        assert "arm/joint1" in servo.joint_names
+
+
+def test_piper_policy_remaps_camera_to_policy_image_slot() -> None:
+    """`CameraModule.color_image` (Out) remapped onto `PolicyNode.image` (In)."""
+    from dimos.manipulation.policy import PolicyNode
+
+    with _teleop_blueprints(simulation=False, xarm7_ip="192.168.1.10", can_port=None) as (
+        _control_blueprints,
+        quest_blueprints,
+    ):
+        bp = quest_blueprints.teleop_quest_piper_policy
+        assert (PolicyNode, "image") in bp.remapping_map
+        assert bp.remapping_map[(PolicyNode, "image")] == "color_image"
+
+
+def test_piper_policy_engage_buttons_derived_from_right_hand_teleop() -> None:
+    """The PolicyNode atom's `teleop_engage_buttons` must contain
+    `right_primary` (right-hand Pink IK) and must NOT contain `left_primary`
+    (no left-hand teleop task is wired in this blueprint)."""
+    with _teleop_blueprints(simulation=False, xarm7_ip="192.168.1.10", can_port=None) as (
+        _control_blueprints,
+        quest_blueprints,
+    ):
+        bp = quest_blueprints.teleop_quest_piper_policy
+        policy_atom = _atom_for(bp, "PolicyNode")
+        engage = policy_atom.kwargs["teleop_engage_buttons"]
+        assert "right_primary" in engage
+        assert "left_primary" not in engage
+
+
+def test_piper_policy_default_backend_is_test() -> None:
+    """Default deployment uses the dependency-free TestPolicy backend.
+
+    The amplitude is intentionally non-zero so simulation runs produce
+    visible motion. The gripper amplitude (last entry) is kept small to
+    avoid slamming, and per-joint phases stagger the motion across joints.
+    """
+    with _teleop_blueprints(simulation=False, xarm7_ip="192.168.1.10", can_port=None) as (
+        _control_blueprints,
+        quest_blueprints,
+    ):
+        bp = quest_blueprints.teleop_quest_piper_policy
+        policy_atom = _atom_for(bp, "PolicyNode")
+        assert policy_atom.kwargs["backend"] == "test"
+        amp = policy_atom.kwargs["backend_config"]["amplitude"]
+        assert isinstance(amp, list) and len(amp) == 7
+        # Arm joints get a visible swing; the gripper stays small.
+        assert all(a > 0 for a in amp[:6])
+        assert amp[6] < amp[0]  # gripper bounded below arm amplitude

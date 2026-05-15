@@ -23,7 +23,22 @@ joint position commands as `JointState` on `joint_command`.
 Teleop preempts: when any button in `teleop_engage_buttons` goes high,
 publication is suspended and `backend.reset()` is called. On disengage,
 publication resumes from a fresh `select_action()` against the current
-observation; pre-engage buffered actions are never replayed.
+observation; pre-engage buffered actions are never replayed. Engagement
+is also re-checked after `backend.select_action()` returns so a command
+computed against pre-engage state is dropped if engagement fires during
+an in-flight inference call.
+
+Rollout gating: the node starts with `_rollout_enabled = False` so the
+operator must explicitly call `start_rollout()` before commands publish.
+`stop_rollout()` re-disables publication. Both transitions call
+`backend.reset()` so any buffered chunk is discarded across them.
+`is_rollout_active()` reports the current state for sibling modules
+(see `RolloutToggle`).
+
+Mandatory buttons subscription: when `teleop_engage_buttons` is
+non-empty, the `buttons` subscription is a hard requirement of `start()`
+and publication is additionally gated on having received at least one
+`Buttons` message (with a `buttons_grace_period` warning after timeout).
 """
 
 from __future__ import annotations
@@ -111,7 +126,15 @@ class PolicyNode(Module):
 
         self._engage_lock = threading.Lock()
         self._engaged: bool = False
-        self._engage_pending_reset: bool = False
+        self._rollout_enabled: bool = False
+
+        # First-Buttons-message gate (only consulted when teleop_engage_buttons
+        # is non-empty). Both fields are protected by _engage_lock for
+        # simplicity since they're touched by the inference loop and the
+        # button-handler.
+        self._first_buttons_received: bool = False
+        self._start_monotonic: float = 0.0
+        self._grace_warning_logged: bool = False
 
         self._backend: PolicyBackend | None = None
         self._backend_lock = threading.Lock()
@@ -129,6 +152,11 @@ class PolicyNode(Module):
             self._backend = create_backend(self.config.backend, **self.config.backend_config)
             self._backend.initialize()
 
+        with self._engage_lock:
+            self._first_buttons_received = False
+            self._grace_warning_logged = False
+            self._start_monotonic = time.monotonic()
+
         self._subscribe_inputs()
 
         self._stop_event.clear()
@@ -142,6 +170,32 @@ class PolicyNode(Module):
         logger.info(
             f"PolicyNode started: backend={self.config.backend} rate={self.config.policy_rate}Hz"
         )
+
+    @rpc
+    def start_rollout(self) -> None:
+        """Enable command publication. Calls `backend.reset()`."""
+        with self._engage_lock:
+            self._rollout_enabled = True
+        self._reset_backend("rollout started")
+        logger.info("PolicyNode: rollout started")
+
+    @rpc
+    def stop_rollout(self) -> None:
+        """Disable command publication. Calls `backend.reset()`."""
+        with self._engage_lock:
+            self._rollout_enabled = False
+        self._reset_backend("rollout stopped")
+        logger.info("PolicyNode: rollout stopped")
+
+    @rpc
+    def is_rollout_active(self) -> bool:
+        """Return whether the operator has enabled policy rollout.
+
+        Decorated `@rpc` so sibling modules (e.g., `RolloutToggle`) can
+        read it through the cross-module proxy.
+        """
+        with self._engage_lock:
+            return self._rollout_enabled
 
     @rpc
     def stop(self) -> None:
@@ -193,10 +247,14 @@ class PolicyNode(Module):
         except Exception:
             logger.debug("PolicyNode: task_description not connected")
 
-        try:
+        if self.config.teleop_engage_buttons:
+            # Hard requirement: subscription failure aborts startup.
             self._unsub.append(self.buttons.subscribe(self._on_buttons))
-        except Exception:
-            logger.debug("PolicyNode: buttons not connected (no teleop preempt)")
+        else:
+            try:
+                self._unsub.append(self.buttons.subscribe(self._on_buttons))
+            except Exception:
+                logger.debug("PolicyNode: buttons not connected (no teleop preempt)")
 
     def _make_image_handler(self, camera_key: str) -> _ImageHandler:
         def _handle(msg: Image) -> None:
@@ -226,8 +284,7 @@ class PolicyNode(Module):
         with self._engage_lock:
             was_engaged = self._engaged
             self._engaged = engaged_now
-            if engaged_now and not was_engaged:
-                self._engage_pending_reset = True
+            self._first_buttons_received = True
 
         if engaged_now and not was_engaged:
             self._reset_backend("teleop engaged")
@@ -282,12 +339,12 @@ class PolicyNode(Module):
         """Run a single inference step.
 
         Returns the command produced (`PolicyCommand`) for testing, or
-        `None` if the step was skipped (preempted, missing inputs, or
-        backend not yet initialized).
+        `None` if the step was skipped (preempted, missing inputs, rollout
+        disabled, awaiting first Buttons message, or backend not yet
+        initialized).
         """
-        with self._engage_lock:
-            if self._engaged:
-                return None
+        if not self._publication_allowed_pre_inference():
+            return None
 
         backend = self._backend
         if backend is None:
@@ -312,8 +369,43 @@ class PolicyNode(Module):
             logger.exception("PolicyNode: backend.select_action raised")
             return None
 
+        # Re-check gates after inference: an engage edge or stop_rollout()
+        # may have fired during the (potentially slow) select_action call.
+        # Dropping the command here keeps preempt strict even when the
+        # button-handler thread runs concurrently with inference.
+        with self._engage_lock:
+            if self._engaged or not self._rollout_enabled:
+                return command
+
         self._publish_if_valid(command)
         return command
+
+    def _publication_allowed_pre_inference(self) -> bool:
+        """Gate checked before `select_action()` runs.
+
+        Combines the engagement gate, the rollout gate, and (when
+        `teleop_engage_buttons` is configured) the first-Buttons-message
+        gate. The grace-period warning is logged here so it fires each
+        tick the gate stays closed.
+        """
+        with self._engage_lock:
+            if self._engaged:
+                return False
+            if not self._rollout_enabled:
+                return False
+            if self.config.teleop_engage_buttons and not self._first_buttons_received:
+                elapsed = time.monotonic() - self._start_monotonic
+                if elapsed > self.config.buttons_grace_period and not self._grace_warning_logged:
+                    logger.warning(
+                        "PolicyNode: no Buttons message received within "
+                        f"{self.config.buttons_grace_period:.1f}s of start "
+                        "(teleop_engage_buttons is configured); continuing "
+                        "to suppress publication until a Buttons message "
+                        "arrives."
+                    )
+                    self._grace_warning_logged = True
+                return False
+        return True
 
     # ── command validation + publishing ───────────────────────────────────
 

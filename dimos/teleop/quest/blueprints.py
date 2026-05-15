@@ -20,12 +20,17 @@ real hardware. The underlying coordinator blueprints branch on
 `global_config.simulation`.
 """
 
+import math
+
 from dimos.control.blueprints.teleop import (
     coordinator_teleop_dual,
     coordinator_teleop_piper,
+    coordinator_teleop_piper_with_policy,
     coordinator_teleop_xarm6,
     coordinator_teleop_xarm7,
     is_xarm7_mock_preview,
+    piper_policy_joint_names,
+    piper_policy_overlapping_teleop_tasks,
     piper_teleop_robot_model_config,
     xarm7_teleop_robot_model_config,
 )
@@ -33,6 +38,11 @@ from dimos.core.coordination.blueprints import autoconnect
 from dimos.core.transport import LCMTransport
 from dimos.hardware.sensors.camera.module import CameraModule
 from dimos.manipulation.manipulation_module import ManipulationModule
+from dimos.manipulation.policy import (
+    PolicyNode,
+    RolloutToggle,
+    policy_engage_buttons,
+)
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.JointState import JointState
@@ -155,6 +165,75 @@ teleop_quest_piper_data_collection = autoconnect(
     }
 )
 
+# Piper teleop + policy deployment (no data collection): right controller -> piper
+# arm via Pink IK; a low-priority servo task on the same joints accepts policy
+# joint commands. The PolicyNode is gated by `RolloutToggle` (left_secondary by
+# default) and preempted by `right_primary` (teleop engage). The `TestPolicy`
+# backend with amplitude=0 emits constant-position commands so the first wiring
+# run is a no-motion shakedown — change `backend` / `backend_config` to swap in
+# a LeRobot model.
+_piper_policy_joints = piper_policy_joint_names()
+_piper_policy_engage_buttons = policy_engage_buttons(
+    _piper_policy_joints, piper_policy_overlapping_teleop_tasks()
+)
+
+teleop_quest_piper_policy = (
+    autoconnect(
+        ArmTeleopModule.blueprint(task_names={"right": "teleop_piper"}),
+        coordinator_teleop_piper_with_policy,
+        CameraModule.blueprint(),
+        PolicyNode.blueprint(
+            backend="test",
+            backend_config={
+                "joint_names": _piper_policy_joints,
+                # 6 arm joints get a visible ~8.5° (0.15 rad) swing; the
+                # gripper (last entry) stays small to avoid slamming.
+                "amplitude": [0.15, 0.15, 0.15, 0.15, 0.15, 0.15, 0.01],
+                "frequency": 0.3,
+                # Staggered phases produce a wave across joints so the motion
+                # is visually distinct rather than synchronized.
+                "phase": [
+                    0.0,
+                    math.pi / 6,
+                    math.pi / 3,
+                    math.pi / 2,
+                    2 * math.pi / 3,
+                    5 * math.pi / 6,
+                    0.0,
+                ],
+            },
+            policy_rate=10.0,
+            joint_names=_piper_policy_joints,
+            camera_sources={"image": "main"},
+            teleop_engage_buttons=_piper_policy_engage_buttons,
+            default_task="run policy",
+        ),
+        RolloutToggle.blueprint(),
+        ManipulationModule.blueprint(
+            robots=[piper_teleop_robot_model_config()],
+            enable_viz=True,
+        ),
+    )
+    .remappings(
+        [
+            # CameraModule publishes `color_image`; PolicyNode listens on `image`.
+            (PolicyNode, "image", "color_image"),
+        ],
+    )
+    .transports(
+        {
+            ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
+            ("right_controller_output", PoseStamped): LCMTransport(
+                "/coordinator/cartesian_command", PoseStamped
+            ),
+            ("buttons", Buttons): LCMTransport("/teleop/buttons", Buttons),
+            ("color_image", Image): LCMTransport("/piper_policy/color_image", Image),
+            ("joint_command", JointState): LCMTransport("/coordinator/joint_command", JointState),
+        }
+    )
+)
+
+
 # XArm6 teleop (sim with --simulation, real otherwise): right controller -> xarm6
 teleop_quest_xarm6 = autoconnect(
     ArmTeleopModule.blueprint(task_names={"right": "teleop_xarm"}),
@@ -190,6 +269,7 @@ __all__ = [
     "teleop_quest_dual",
     "teleop_quest_piper",
     "teleop_quest_piper_data_collection",
+    "teleop_quest_piper_policy",
     "teleop_quest_rerun",
     "teleop_quest_xarm6",
     "teleop_quest_xarm7",

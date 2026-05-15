@@ -21,6 +21,13 @@ robot-learning packages. It produces joint position commands that follow
 The backend's "time" is the wall-clock elapsed since the most recent
 `reset()` (or `initialize()`), so calling `reset()` deterministically
 restarts the trajectory from phase 0.
+
+When `center` is not provided at construction, the backend captures the
+current joint positions from the next `select_action()` observation and
+uses them as the sinusoid center. This avoids the "snap to zero" jump
+that an absolute open-loop policy would otherwise produce on every
+reset (rollout start, teleop disengage, etc.). Re-captures on every
+`reset()` so the trajectory always replans from the live pose.
 """
 
 from __future__ import annotations
@@ -42,8 +49,13 @@ class TestPolicy:
             joint type). Scalar broadcasts to every joint.
         frequency: Per-joint sinusoid frequency in Hz. Scalar broadcasts.
         phase: Per-joint phase offset in radians. Scalar broadcasts.
-        center: Optional per-joint center value. ``None`` is treated as
-            ``0.0`` for every joint. A scalar broadcasts.
+        center: Optional per-joint center value. When provided (scalar
+            or per-joint sequence), the center is **static** — the
+            sinusoid always oscillates around this value. When ``None``
+            (the default), the center is captured from the next
+            `select_action()` observation's `joint_state` after every
+            `reset()` / `initialize()`, so the trajectory always replans
+            from the live joint pose instead of snapping to zero.
     """
 
     # Tell pytest this is not a test class despite the `Test` prefix.
@@ -66,8 +78,12 @@ class TestPolicy:
         self._amplitude: tuple[float, ...] = self._broadcast(amplitude, n, "amplitude")
         self._frequency: tuple[float, ...] = self._broadcast(frequency, n, "frequency")
         self._phase: tuple[float, ...] = self._broadcast(phase, n, "phase")
+        # Center mode: caller-provided centers are static; `None` means
+        # auto-capture from the observation on each reset.
+        self._center_from_observation: bool = center is None
         center_seq: float | Sequence[float] = 0.0 if center is None else center
         self._center: tuple[float, ...] = self._broadcast(center_seq, n, "center")
+        self._center_dirty: bool = self._center_from_observation
 
         self._t0: float = time.monotonic()
 
@@ -89,13 +105,52 @@ class TestPolicy:
     def initialize(self) -> None:
         """Reset the phase clock so the first inference starts at t=0."""
         self._t0 = time.monotonic()
+        if self._center_from_observation:
+            self._center_dirty = True
 
     def select_action(self, observation: PolicyObservation) -> PolicyCommand:
-        del observation  # TestPolicy is open-loop on purpose.
+        if self._center_dirty and self._center_from_observation:
+            captured = self._capture_center_from_observation(observation)
+            if captured is not None:
+                self._center = captured
+                self._center_dirty = False
+                # Restart the phase clock at the moment of capture so the
+                # first sample corresponds to t≈0 (within a few µs) and
+                # equals the live joint pose. Without this, t accumulates
+                # during the teleop-engaged window and the policy would
+                # resume at an arbitrary point along the sinusoid.
+                self._t0 = time.monotonic()
+            # If capture failed (no joint_state yet, or missing joints), stay
+            # dirty and try again on the next tick; the sinusoid temporarily
+            # oscillates around the previous center.
         return JointPositionCommand(
             joint_names=self._joint_names,
             positions=self._sample_at(time.monotonic() - self._t0),
         )
+
+    def _capture_center_from_observation(
+        self, observation: PolicyObservation
+    ) -> tuple[float, ...] | None:
+        """Capture the joint state as the sinusoid center.
+
+        Returns centers adjusted by ``-amplitude * sin(phase)`` per joint so
+        that ``position(t=0) = center + amplitude*sin(phase)`` collapses to
+        the captured pose. This guarantees a jump-free start regardless of
+        the configured phases — the policy "continues from where teleop left
+        off" on every reset.
+        """
+        js = observation.joint_state
+        if js is None or not js.name or not js.position:
+            return None
+        index_by_name = {n: i for i, n in enumerate(js.name)}
+        centers: list[float] = []
+        for joint, amp, phase in zip(self._joint_names, self._amplitude, self._phase, strict=True):
+            idx = index_by_name.get(joint)
+            if idx is None or idx >= len(js.position):
+                return None
+            pose = float(js.position[idx])
+            centers.append(pose - amp * math.sin(phase))
+        return tuple(centers)
 
     def _sample_at(self, t: float) -> tuple[float, ...]:
         two_pi = 2.0 * math.pi
@@ -114,8 +169,16 @@ class TestPolicy:
         return dict(zip(self._joint_names, self._sample_at(t), strict=True))
 
     def reset(self) -> None:
-        """Restart the sinusoid phase clock from zero."""
+        """Restart the sinusoid phase clock from zero.
+
+        When the center was constructed as auto-from-observation, also
+        marks the center dirty so the next `select_action()` re-captures
+        it from the live joint state — the policy "replans from here"
+        after every rollout start / teleop handoff.
+        """
         self._t0 = time.monotonic()
+        if self._center_from_observation:
+            self._center_dirty = True
 
     def close(self) -> None:
         """No-op — `TestPolicy` holds no external resources."""
