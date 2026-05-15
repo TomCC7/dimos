@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 import importlib
+from pathlib import Path
 import sys
 from types import ModuleType
 
@@ -166,7 +167,8 @@ def test_piper_data_collection_blueprint_routes_recorded_streams() -> None:
         assert "ArmTeleopModule" in names
         assert "ControlCoordinator" in names
         assert "CameraModule" in names
-        assert "PiperDataRecorder" in names
+        assert "RerunDataRecorder" in names
+        assert "EpisodeBoundary" in names
         assert (
             quest_blueprints.teleop_quest_piper_data_collection.transport_map[
                 ("joint_state", JointState)
@@ -199,12 +201,14 @@ def test_piper_data_collection_blueprint_routes_recorded_streams() -> None:
         )
 
 
-def test_piper_data_collection_blueprint_includes_rerun_vis_sink() -> None:
-    """Data collection blueprint exposes the recorded streams to a Rerun vis sink.
+def test_piper_data_collection_blueprint_includes_rerun_vis_and_recorder() -> None:
+    """The data collection blueprint exposes the recorded streams to BOTH a
+    live Rerun viewer and a standalone on-disk recorder.
 
-    Verifies the blueprint contains a RerunBridgeModule atom in addition to the
-    existing recording stack, and that the topics for the pre-existing
-    transport_map entries are unchanged (visualization is a passive sink).
+    Verifies the blueprint contains a RerunBridgeModule and a RerunDataRecorder
+    atom alongside the camera + coordinator, and that the topics for the
+    pre-existing transport_map entries are unchanged (visualization and
+    recording are passive sinks on the same source streams).
     """
     with _teleop_blueprints(simulation=False, xarm7_ip="192.168.1.10", can_port=None) as (
         _control_blueprints,
@@ -212,9 +216,13 @@ def test_piper_data_collection_blueprint_includes_rerun_vis_sink() -> None:
     ):
         bp = quest_blueprints.teleop_quest_piper_data_collection
         names = _module_names(bp)
-        assert "RerunBridgeModule" in names, names
-        # The recording stack must still be there alongside the new vis sink.
-        for required in ("CameraModule", "PiperDataRecorder", "ControlCoordinator"):
+        for required in (
+            "CameraModule",
+            "RerunDataRecorder",
+            "RerunBridgeModule",
+            "EpisodeBoundary",
+            "ControlCoordinator",
+        ):
             assert required in names, (required, names)
 
         # Topics for the pre-existing transport_map entries are unchanged.
@@ -227,6 +235,84 @@ def test_piper_data_collection_blueprint_includes_rerun_vis_sink() -> None:
         }
         for key, topic in expected_topics.items():
             assert bp.transport_map[key].topic.topic == topic, key
+
+
+def _atom_for(bp: object, module_name: str) -> object:
+    for atom in bp.blueprints:
+        if atom.module.__name__ == module_name:
+            return atom
+    raise AssertionError(f"atom {module_name!r} not found in blueprint")
+
+
+def test_piper_data_collection_viewer_and_recorder_share_config_identity() -> None:
+    """Structural drift safeguard (design.md Decision 5).
+
+    The recorder and the bridge must consume the *same* visual_override,
+    entity_prefix, and topic_to_entity objects so a future contributor cannot
+    change one without changing the other.
+    """
+    with _teleop_blueprints(simulation=False, xarm7_ip="192.168.1.10", can_port=None) as (
+        _control_blueprints,
+        quest_blueprints,
+    ):
+        bp = quest_blueprints.teleop_quest_piper_data_collection
+        recorder_atom = _atom_for(bp, "RerunDataRecorder")
+        bridge_atom = _atom_for(bp, "RerunBridgeModule")
+        for key in ("visual_override", "entity_prefix", "topic_to_entity"):
+            assert recorder_atom.kwargs[key] is bridge_atom.kwargs[key], key
+
+
+def test_piper_data_collection_recorder_path_factory_monotonic() -> None:
+    """First call yields ``…/episode_001.rrd``, second call yields ``…/episode_002.rrd``."""
+    with _teleop_blueprints(simulation=False, xarm7_ip="192.168.1.10", can_port=None) as (
+        _control_blueprints,
+        quest_blueprints,
+    ):
+        bp = quest_blueprints.teleop_quest_piper_data_collection
+        recorder_atom = _atom_for(bp, "RerunDataRecorder")
+        factory = recorder_atom.kwargs["record_path_factory"]
+        p1 = factory()
+        p2 = factory()
+        assert p1.name == "episode_001.rrd"
+        assert p2.name == "episode_002.rrd"
+        assert p1.parent == p2.parent
+        # …/piper_data_collection/<session>/episode_NNN.rrd
+        assert p1.parent.parent.name == "piper_data_collection"
+
+
+def test_piper_data_collection_episode_boundary_targets_recorder() -> None:
+    """The EpisodeBoundary atom carries a typed module-ref to RerunDataRecorder
+    so the coordinator wires up the rotate_recording dispatch."""
+    with _teleop_blueprints(simulation=False, xarm7_ip="192.168.1.10", can_port=None) as (
+        _control_blueprints,
+        quest_blueprints,
+    ):
+        bp = quest_blueprints.teleop_quest_piper_data_collection
+        atom = _atom_for(bp, "EpisodeBoundary")
+        ref_targets = {ref.name: ref.spec for ref in atom.module_refs}
+        from dimos.visualization.rerun.recorder import RerunDataRecorder
+
+        assert ref_targets.get("recorder") is RerunDataRecorder
+
+
+def test_recorder_does_not_import_bridge_logic_beyond_types() -> None:
+    """Guardrail: recorder.py imports only types from bridge.py — never its
+    composition logic. Pin this with a grep so a refactor that silently pulls
+    in bridge code fails CI.
+    """
+    import re
+
+    src = (
+        Path(__file__).resolve().parent.parent.parent / "visualization" / "rerun" / "recorder.py"
+    ).read_text()
+    bridge_imports = re.findall(r"from dimos\.visualization\.rerun\.bridge import [^\n]+", src)
+    assert len(bridge_imports) == 1, bridge_imports
+    imported_names = set(
+        name.strip().strip("(),") for name in bridge_imports[0].split("import", 1)[1].split(",")
+    )
+    # Only types — RerunMulti, RerunData, RerunConvertible, is_rerun_multi.
+    forbidden = {"RerunBridgeModule", "Config", "_default_blueprint"}
+    assert not imported_names & forbidden, imported_names
 
 
 def test_real_can_piper_teleop_uses_hardware_with_manipulation_preview() -> None:

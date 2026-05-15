@@ -22,7 +22,8 @@ from dimos.robot.config import GripperConfig, RobotConfig
 from dimos.utils.data import LfsPath
 
 # Gripper-inclusive URDF/Xacro for Pinocchio FK. The Pink teleop task reduces
-# the finger joints out of this model so arm IK can target ``gripper_base``.
+# the finger joints out of this model so arm IK can target ``gripper_tcp`` (a
+# virtual fixed frame at the midpoint of link7/link8, attached to ``gripper_base``).
 PIPER_FK_MODEL = LfsPath("piper_description/urdf/piper_description.xacro")
 
 # Arm-only MJCF for legacy six-DOF Cartesian IK paths.
@@ -64,7 +65,7 @@ def piper(
     defaults: dict[str, Any] = {
         "name": name,
         "model_path": LfsPath("piper_description") / "urdf/piper_description.xacro",
-        "end_effector_link": "gripper_base",
+        "end_effector_link": "gripper_tcp",
         "adapter_type": adapter_type,
         "address": address,
         "joint_names": [f"joint{i}" for i in range(1, 7)],

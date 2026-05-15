@@ -15,14 +15,35 @@
 
 """Rerun visualization wiring for the Piper data collection blueprint.
 
-Provides the JointState → Rerun scalar override and the layout preset used by
-`teleop_quest_piper_data_collection`. Joint name source is shared between the
-override and the preset so they cannot drift.
+Provides:
+
+- ``joint_state_to_rerun_scalars`` — the JointState → per-joint Rerun scalar
+  override consumed by both the live viewer and the on-disk recorder.
+- ``piper_data_collection_rerun_blueprint`` — the preset Rerun layout (camera
+  on the left, per-joint plots on the right).
+- ``piper_data_collection_rerun_config`` — the single source-of-truth config
+  dict consumed by both ``vis_module("rerun", rerun_config=...)`` and
+  ``RerunDataRecorder.blueprint(...)``. Sharing this dict is the structural
+  guarantee that the viewer and the recorder cannot drift apart.
+- Session / episode path / id / metadata factories used by the blueprint to
+  drive the standalone ``RerunDataRecorder``.
+
+Joint name source is shared with the override and the preset so they cannot
+drift. Recorded entity paths follow a LeRobot-aligned schema —
+``/observation/camera/usb``, ``/observation/state/<joint>``, ``/action/<joint>``
+— so ``rerun.dataframe`` / ``rerun.experimental.dataloader`` can select
+observations and actions by entity-path prefix.
 """
 
+from __future__ import annotations
+
 from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from functools import partial
-from typing import Literal
+import os
+from pathlib import Path
+from typing import Any, Literal
 
 import rerun as rr
 import rerun.blueprint as rrb
@@ -30,26 +51,27 @@ import rerun.blueprint as rrb
 from dimos.control.blueprints.teleop import piper_teleop_robot_model_config
 from dimos.control.components import make_gripper_joints
 from dimos.msgs.sensor_msgs.JointState import JointState
+from dimos.utils.data import get_data_dir
 from dimos.visualization.rerun.bridge import RerunMulti
 
 JointRole = Literal["measured", "commanded"]
 
-# Entity-path layout used by the override and preset:
-#   <prefix>/<role>/<short_joint_name>
-# Short name = the part after the last "/" in the JointState.name entry.
-_ENTITY_PREFIX = "world/piper"
+# LeRobot-aligned entity-path layout. The recorder and the viewer both log
+# under these prefixes; downstream readers can select observation vs. action by
+# entity-path prefix without consulting per-session metadata.
+_OBSERVATION_STATE_PREFIX = "/observation/state"
+_ACTION_PREFIX = "/action"
 
-# Camera image topic on the data collection blueprint. The Rerun bridge derives
-# the entity path by prepending its entity_prefix ("world" by default), so the
-# camera lands at "world/piper_data_collection/color_image". Kept here so the
-# preset and any future override stay in sync with the transport_map.
+# Camera image:
+#   LCM topic is unchanged so the rest of the blueprint keeps working.
+#   The rendered / recorded entity path is the LeRobot-aligned one.
 CAMERA_TOPIC = "/piper_data_collection/color_image"
-CAMERA_ENTITY_PATH = f"world{CAMERA_TOPIC}"
+CAMERA_RECORDED_ENTITY_PATH = "/observation/camera/usb"
 
-# Pattern keys used in RerunBridgeModule.visual_override. The bridge constructs
-# the entity path as f"{entity_prefix}{topic}" so these match the default prefix.
-JOINT_STATE_ENTITY_PATH = "world/coordinator/joint_state"
-DESIRED_JOINT_ACTION_ENTITY_PATH = "world/coordinator/desired_joint_action"
+# Visual-override pattern keys. With the LeRobot retarget the recorder /
+# bridge use entity_prefix="" so these match the bare LCM topic names.
+_JOINT_STATE_ENTITY_PATH = "/coordinator/joint_state"
+_DESIRED_JOINT_ACTION_ENTITY_PATH = "/coordinator/desired_joint_action"
 
 
 def piper_data_collection_joint_short_names() -> list[str]:
@@ -65,7 +87,9 @@ def piper_data_collection_joint_short_names() -> list[str]:
 
 
 def _entity_path(role: JointRole, short_name: str) -> str:
-    return f"{_ENTITY_PREFIX}/{role}/{short_name}"
+    if role == "measured":
+        return f"{_OBSERVATION_STATE_PREFIX}/{short_name}"
+    return f"{_ACTION_PREFIX}/{short_name}"
 
 
 def _convert_joint_state(role: JointRole, msg: JointState) -> RerunMulti:
@@ -113,7 +137,7 @@ def piper_data_collection_rerun_blueprint() -> rrb.Blueprint:
     return rrb.Blueprint(
         rrb.Horizontal(
             rrb.Spatial2DView(
-                origin=CAMERA_ENTITY_PATH,
+                origin=CAMERA_RECORDED_ENTITY_PATH,
                 name="USB camera",
             ),
             rrb.Vertical(*joint_plots),
@@ -125,12 +149,141 @@ def piper_data_collection_rerun_blueprint() -> rrb.Blueprint:
     )
 
 
-def piper_data_collection_rerun_config() -> dict[str, object]:
-    """Bundle the visual_override map and blueprint factory for vis_module()."""
+# ── Session / episode helpers ────────────────────────────────────────────────
+
+
+def default_session_name() -> str:
+    """Generate a session directory name as a UTC ``YYYYMMDDTHHMMSSZ`` timestamp."""
+    return datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+@dataclass
+class _EpisodePathFactory:
+    """Stateful per-episode path factory (kept as a top-level dataclass so it
+    is picklable for multiprocessing deployment of the data collection
+    blueprint)."""
+
+    session_name: str | None = None
+    counter: int = 0
+
+    def __call__(self) -> Path:
+        if self.session_name is None:
+            self.session_name = default_session_name()
+        self.counter += 1
+        return (
+            get_data_dir()
+            / "piper_data_collection"
+            / self.session_name
+            / f"episode_{self.counter:03d}.rrd"
+        )
+
+
+def default_episode_path_factory(session_name: str | None = None) -> Callable[[], Path]:
+    """Return a stateful factory producing per-episode `.rrd` paths.
+
+    Each call yields ``{data_dir}/piper_data_collection/<session>/episode_<NNN>.rrd``
+    with a monotonically increasing 1-indexed counter. When ``session_name`` is
+    ``None`` the factory generates one on its first call and reuses it for the
+    rest of the session.
+    """
+    return _EpisodePathFactory(session_name=session_name)
+
+
+def default_recording_id_factory(path: Path) -> str:
+    """Default ``recording_id`` derivation from a per-episode `.rrd` path.
+
+    ``…/<session>/episode_<NNN>.rrd`` → ``<session>/episode_<NNN>``.
+    """
+    return f"{path.parent.name}/{path.stem}"
+
+
+def _build_piper_episode_metadata(session_id: str, operator: str | None, n: int) -> dict[str, str]:
+    out: dict[str, str] = {
+        "episode_id": f"{session_id}/episode_{n:03d}",
+        "episode_index": str(n),
+        "session_id": session_id,
+    }
+    if operator is not None:
+        out["operator"] = operator
+    return out
+
+
+def piper_episode_metadata(
+    session_id: str,
+    operator: str | None,
+) -> Callable[[int], dict[str, str]]:
+    """Build a per-episode metadata callable for ``RerunDataRecorder``.
+
+    Given a 1-indexed episode number ``n``, the returned callable yields::
+
+        {
+          "episode_id": f"{session_id}/episode_{n:03d}",
+          "episode_index": str(n),
+          "session_id": session_id,
+          "operator": operator,                       # omitted when None
+        }
+
+    Returned as a ``functools.partial`` over a module-level function so it
+    pickles cleanly for multiprocessing deployment.
+    """
+    return partial(_build_piper_episode_metadata, session_id, operator)
+
+
+def _piper_data_collection_topic_to_entity(topic: Any) -> str:
+    """Topic→entity_path callback shared by the viewer and the recorder.
+
+    - Camera LCM topic ``/piper_data_collection/color_image`` → ``/observation/camera/usb``.
+    - Everything else maps to its bare topic name (LCM ``#Type`` suffix
+      stripped), so visual_override keys match the topic name directly.
+    """
+    name = getattr(topic, "name", None) or str(topic)
+    name = name.split("#")[0]
+    if name == CAMERA_TOPIC:
+        return CAMERA_RECORDED_ENTITY_PATH
+    return name
+
+
+def piper_data_collection_rerun_config(
+    *,
+    session_name: str | None = None,
+    operator: str | None = None,
+    record_path_factory: Callable[[], Path] | None = None,
+) -> dict[str, Any]:
+    """Single source-of-truth config dict for the viewer + the recorder.
+
+    The same dict is passed to ``vis_module("rerun", rerun_config=...)`` and
+    ``RerunDataRecorder.blueprint(...)`` from the data collection blueprint.
+    Shared object identity is the structural drift guard between the two
+    sinks — see design.md Decision 5.
+
+    Recorder-only fields (``record_path_factory``, ``recording_id_factory``,
+    ``episode_metadata``, ``app_id``) are silently ignored by the bridge.
+
+    ``operator`` defaults to the ``DIMOS_OPERATOR`` env var (or absent).
+    ``record_path_factory`` defaults to the shipped per-episode path factory.
+    """
+    if record_path_factory is None:
+        record_path_factory = default_episode_path_factory(session_name)
+    if operator is None:
+        operator = os.environ.get("DIMOS_OPERATOR")
+
+    # session_id is the directory the path factory will write into. Use the
+    # session_name argument if provided; otherwise we cannot know it until the
+    # factory runs, so we hand the closure a placeholder that is rewritten on
+    # first episode (the factory mutates state; we read it after the first call).
+    session_id = session_name or "session"
+    episode_metadata = piper_episode_metadata(session_id, operator)
+
     return {
         "visual_override": {
-            JOINT_STATE_ENTITY_PATH: joint_state_to_rerun_scalars("measured"),
-            DESIRED_JOINT_ACTION_ENTITY_PATH: joint_state_to_rerun_scalars("commanded"),
+            _JOINT_STATE_ENTITY_PATH: joint_state_to_rerun_scalars("measured"),
+            _DESIRED_JOINT_ACTION_ENTITY_PATH: joint_state_to_rerun_scalars("commanded"),
         },
+        "entity_prefix": "",
+        "topic_to_entity": _piper_data_collection_topic_to_entity,
         "blueprint": piper_data_collection_rerun_blueprint,
+        # Recorder-only fields below; the bridge ignores them.
+        "record_path_factory": record_path_factory,
+        "recording_id_factory": default_recording_id_factory,
+        "episode_metadata": episode_metadata,
     }

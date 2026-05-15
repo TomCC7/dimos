@@ -36,10 +36,11 @@ from dimos.manipulation.manipulation_module import ManipulationModule
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 from dimos.msgs.sensor_msgs.Image import Image
 from dimos.msgs.sensor_msgs.JointState import JointState
-from dimos.teleop.quest.data_collection import PiperDataRecorder
 from dimos.teleop.quest.data_collection_vis import piper_data_collection_rerun_config
+from dimos.teleop.quest.episode_boundary import EpisodeBoundary
 from dimos.teleop.quest.quest_extensions import ArmTeleopModule
 from dimos.teleop.quest.quest_types import Buttons
+from dimos.visualization.rerun.recorder import RerunDataRecorder
 from dimos.visualization.vis_module import vis_module
 
 # Arm teleop with press-and-hold engage (has rerun viz)
@@ -101,19 +102,45 @@ teleop_quest_piper = autoconnect(
 )
 
 # Piper teleop data collection: right controller -> piper arm, with USB camera
-# observation plus measured state/action recording. A Rerun vis sink plots the
-# camera + per-joint measured/commanded scalars so the operator can verify
-# capture live; visualization is a passive sink and does not alter recording.
+# observation plus measured state / desired action streams. A live Rerun viewer
+# and a standalone on-disk `.rrd` recorder are wired as independent sinks that
+# share a single `piper_data_collection_rerun_config()` instance — guaranteeing
+# the viewer and the recorder cannot drift at wiring time. Rolling over to the
+# next episode within a session is operator-driven via `EpisodeBoundary`
+# (right-controller A by default), which calls `recorder.rotate_recording()`.
+_data_collection_rerun_config = piper_data_collection_rerun_config()
+# Subset of `_data_collection_rerun_config` accepted by RerunBridgeModule.Config.
+_DATA_COLLECTION_BRIDGE_KEYS = (
+    "visual_override",
+    "entity_prefix",
+    "topic_to_entity",
+    "blueprint",
+)
+# Subset of `_data_collection_rerun_config` accepted by RerunDataRecorderConfig.
+_DATA_COLLECTION_RECORDER_KEYS = (
+    "visual_override",
+    "entity_prefix",
+    "topic_to_entity",
+    "record_path_factory",
+    "recording_id_factory",
+    "episode_metadata",
+)
 teleop_quest_piper_data_collection = autoconnect(
     ArmTeleopModule.blueprint(task_names={"right": "teleop_piper"}),
     coordinator_teleop_piper,
     CameraModule.blueprint(),
-    PiperDataRecorder.blueprint(),
+    RerunDataRecorder.blueprint(
+        **{k: _data_collection_rerun_config[k] for k in _DATA_COLLECTION_RECORDER_KEYS}
+    ),
+    EpisodeBoundary.blueprint(),
     ManipulationModule.blueprint(
         robots=[piper_teleop_robot_model_config()],
         enable_viz=True,
     ),
-    vis_module("rerun", rerun_config=piper_data_collection_rerun_config()),
+    vis_module(
+        "rerun",
+        rerun_config={k: _data_collection_rerun_config[k] for k in _DATA_COLLECTION_BRIDGE_KEYS},
+    ),
 ).transports(
     {
         ("joint_state", JointState): LCMTransport("/coordinator/joint_state", JointState),
