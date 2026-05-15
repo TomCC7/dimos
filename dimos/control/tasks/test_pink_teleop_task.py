@@ -19,7 +19,8 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
-from pink.tasks import DampingTask, FrameTask, PostureTask
+from pink.limits import AccelerationLimit
+from pink.tasks import DampingTask, FrameTask, ManipulabilityTask, PostureTask
 import pytest
 
 from dimos.control.coordinator import ControlCoordinator, ControlCoordinatorConfig, TaskConfig
@@ -27,8 +28,6 @@ from dimos.control.task import ControlMode, CoordinatorState, JointStateSnapshot
 from dimos.control.tasks import pink_teleop_task
 from dimos.control.tasks.pink_teleop_task import (
     BasePinkIKTask,
-    OpenArmBimanualIKTask,
-    OpenArmBimanualIKTaskConfig,
     PiperPinkIKTask,
     PiperPinkIKTaskConfig,
     SingleArmPinkIKTask,
@@ -37,16 +36,11 @@ from dimos.control.tasks.pink_teleop_task import (
     XArm7IKTaskConfig,
 )
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
-from dimos.robot.catalog.openarm import OPENARM_V10_BIMANUAL_FK_MODEL
 from dimos.robot.catalog.piper import PIPER_FK_MODEL
 from dimos.robot.catalog.ufactory import XARM7_FK_MODEL
 
 XARM7_JOINTS = [f"arm/joint{i}" for i in range(1, 8)]
 PIPER_JOINTS = [f"arm/joint{i}" for i in range(1, 7)]
-OPENARM_JOINTS = [
-    *[f"openarm_left_joint{i}" for i in range(1, 8)],
-    *[f"openarm_right_joint{i}" for i in range(1, 8)],
-]
 
 
 def _state(*, t_now: float = 1.0, dt: float = 0.01) -> CoordinatorState:
@@ -68,6 +62,12 @@ def _task(
     posture_gain: float = 1.0,
     damping_task_cost: float = 0.0,
     gain: float = 1.0,
+    max_joint_acceleration: float = 0.0,
+    velocity_smoothing_alpha: float = 1.0,
+    manipulability_cost: float = 0.0,
+    manipulability_lm_damping: float = 1e-3,
+    manipulability_gain: float = 1.0,
+    manipulability_rate: float = 1.5,
 ) -> XArm7IKTask:
     config = XArm7IKTaskConfig(
         joint_names=XARM7_JOINTS,
@@ -81,6 +81,12 @@ def _task(
         posture_lm_damping=posture_lm_damping,
         posture_gain=posture_gain,
         damping_task_cost=damping_task_cost,
+        max_joint_acceleration=max_joint_acceleration,
+        velocity_smoothing_alpha=velocity_smoothing_alpha,
+        manipulability_cost=manipulability_cost,
+        manipulability_lm_damping=manipulability_lm_damping,
+        manipulability_gain=manipulability_gain,
+        manipulability_rate=manipulability_rate,
     )
     return XArm7IKTask("teleop_xarm", config)
 
@@ -89,7 +95,7 @@ def _piper_task(**overrides: Any) -> SingleArmPinkIKTask:
     kwargs: dict[str, Any] = {
         "joint_names": PIPER_JOINTS,
         "model_path": PIPER_FK_MODEL,
-        "end_effector_frame": "gripper_base",
+        "end_effector_frame": "gripper_tcp",
         "hand": "left",
     }
     kwargs.update(overrides)
@@ -331,6 +337,14 @@ def test_posture_reference_rejects_unknown_joint_name() -> None:
         ("gain", 1.1, "gain"),
         ("max_joint_delta_deg", float("inf"), "max_joint_delta_deg"),
         ("timeout", -1.0, "timeout"),
+        ("max_joint_acceleration", -1.0, "max_joint_acceleration"),
+        ("max_joint_acceleration", float("nan"), "max_joint_acceleration"),
+        ("velocity_smoothing_alpha", -0.1, "velocity_smoothing_alpha"),
+        ("velocity_smoothing_alpha", 1.5, "velocity_smoothing_alpha"),
+        ("manipulability_cost", -0.1, "manipulability_cost"),
+        ("manipulability_lm_damping", -1e-3, "manipulability_lm_damping"),
+        ("manipulability_gain", 1.1, "manipulability_gain"),
+        ("manipulability_rate", float("nan"), "manipulability_rate"),
     ],
 )
 def test_invalid_numeric_config_is_rejected(field: str, value: float, match: str) -> None:
@@ -349,6 +363,18 @@ def test_invalid_numeric_config_is_rejected(field: str, value: float, match: str
             _task(max_joint_delta_deg=value)
         elif field == "timeout":
             _task(timeout=value)
+        elif field == "max_joint_acceleration":
+            _task(max_joint_acceleration=value)
+        elif field == "velocity_smoothing_alpha":
+            _task(velocity_smoothing_alpha=value)
+        elif field == "manipulability_cost":
+            _task(manipulability_cost=value)
+        elif field == "manipulability_lm_damping":
+            _task(manipulability_lm_damping=value)
+        elif field == "manipulability_gain":
+            _task(manipulability_gain=value)
+        elif field == "manipulability_rate":
+            _task(manipulability_rate=value)
         else:
             raise AssertionError(f"Unhandled field: {field}")
 
@@ -356,6 +382,39 @@ def test_invalid_numeric_config_is_rejected(field: str, value: float, match: str
 def test_out_of_limit_posture_reference_is_rejected() -> None:
     with pytest.raises(ValueError, match="outside model limits"):
         _task(posture_cost=0.2, posture_reference={"arm/joint2": 1000.0})
+
+
+def test_joint_state_just_past_urdf_limit_does_not_fail_ik() -> None:
+    task = _task()
+    task.on_cartesian_command(PoseStamped(frame_id="teleop_xarm"), t_now=1.0)
+
+    # Padded upper limit is original + joint_limit_margin (default 1e-3 rad).
+    # Sit a joint a few hundred µrad past the original URDF upper bound —
+    # well inside the margin — and confirm Pink's Configuration.update no
+    # longer raises "violates configuration limits".
+    padded_upper = float(task._model.upperPositionLimit[0])
+    overshoot = padded_upper - 5e-4
+    positions = {name: 0.0 for name in XARM7_JOINTS}
+    positions[XARM7_JOINTS[0]] = overshoot
+    state = CoordinatorState(
+        joints=JointStateSnapshot(joint_positions=positions),
+        t_now=1.0,
+        dt=0.01,
+    )
+
+    output = task.compute(state)
+    assert output is not None
+    assert output.mode == ControlMode.SERVO_POSITION
+
+
+def test_negative_joint_limit_margin_is_rejected() -> None:
+    config = XArm7IKTaskConfig(
+        joint_names=XARM7_JOINTS,
+        model_path=XARM7_FK_MODEL,
+        joint_limit_margin=-0.1,
+    )
+    with pytest.raises(ValueError, match="joint_limit_margin"):
+        XArm7IKTask("teleop_xarm", config)
 
 
 def test_posture_enabled_solver_failure_returns_no_command(
@@ -462,11 +521,11 @@ def test_single_arm_pink_task_constructs_configurable_piper_frame_task() -> None
     task = _piper_task()
 
     assert task._config.model_path == PIPER_FK_MODEL
-    assert task._config.end_effector_frame == "gripper_base"
+    assert task._config.end_effector_frame == "gripper_tcp"
     assert task._config.hand == "left"
     assert task._model.nq == len(PIPER_JOINTS)
-    assert task._model.existFrame("gripper_base")
-    assert [str(frame_task.frame) for frame_task in task._frame_tasks] == ["gripper_base"]
+    assert task._model.existFrame("gripper_tcp")
+    assert [str(frame_task.frame) for frame_task in task._frame_tasks] == ["gripper_tcp"]
     assert isinstance(task._frame_tasks[0], FrameTask)
 
 
@@ -505,125 +564,6 @@ def test_single_arm_pink_task_claims_piper_arm_and_gripper() -> None:
     assert output.positions[-1] == 0.035
 
 
-def test_openarm_bimanual_task_accepts_left_and_right_target_slots() -> None:
-    task = OpenArmBimanualIKTask(
-        "teleop_openarm",
-        OpenArmBimanualIKTaskConfig(
-            joint_names=OPENARM_JOINTS,
-            model_path=OPENARM_V10_BIMANUAL_FK_MODEL,
-        ),
-    )
-
-    assert task.target_task_names == ("teleop_openarm_left", "teleop_openarm_right")
-    assert task.on_cartesian_command(
-        PoseStamped(frame_id="teleop_openarm_left"),
-        t_now=1.0,
-    )
-    assert task.on_cartesian_command(
-        PoseStamped(frame_id="teleop_openarm_right"),
-        t_now=1.0,
-    )
-    assert not task.on_cartesian_command(PoseStamped(frame_id="teleop_xarm"), t_now=1.0)
-
-
-def test_openarm_bimanual_task_solves_with_one_live_target() -> None:
-    task = OpenArmBimanualIKTask(
-        "teleop_openarm",
-        OpenArmBimanualIKTaskConfig(
-            joint_names=OPENARM_JOINTS,
-            model_path=OPENARM_V10_BIMANUAL_FK_MODEL,
-        ),
-    )
-    task.on_cartesian_command(PoseStamped(frame_id="teleop_openarm_left"), t_now=1.0)
-
-    output = task.compute(
-        CoordinatorState(
-            joints=JointStateSnapshot(joint_positions={name: 0.0 for name in OPENARM_JOINTS}),
-            t_now=1.0,
-            dt=0.01,
-        )
-    )
-
-    assert output is not None
-    assert output.joint_names == OPENARM_JOINTS
-
-
-def test_openarm_bimanual_task_solves_both_frame_tasks_together(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    task = OpenArmBimanualIKTask(
-        "teleop_openarm",
-        OpenArmBimanualIKTaskConfig(
-            joint_names=OPENARM_JOINTS,
-            model_path=OPENARM_V10_BIMANUAL_FK_MODEL,
-        ),
-    )
-    seen_frames: list[str] = []
-
-    def zero_velocity(
-        _configuration: object, tasks: list[FrameTask], *_args: object, **_kwargs: object
-    ) -> np.ndarray:
-        seen_frames.extend(str(frame_task.frame) for frame_task in tasks)
-        return np.zeros(len(OPENARM_JOINTS), dtype=float)
-
-    monkeypatch.setattr(pink_teleop_task, "solve_ik", zero_velocity)
-    task.on_cartesian_command(PoseStamped(frame_id="teleop_openarm_left"), t_now=1.0)
-    task.on_cartesian_command(PoseStamped(frame_id="teleop_openarm_right"), t_now=1.0)
-
-    output = task.compute(
-        CoordinatorState(
-            joints=JointStateSnapshot(joint_positions={name: 0.0 for name in OPENARM_JOINTS}),
-            t_now=1.0,
-            dt=0.01,
-        )
-    )
-
-    assert output is not None
-    assert seen_frames == ["openarm_left_link7", "openarm_right_link7"]
-
-
-def test_openarm_bimanual_task_preserves_target_slots_on_alternating_updates() -> None:
-    task = OpenArmBimanualIKTask(
-        "teleop_openarm",
-        OpenArmBimanualIKTaskConfig(
-            joint_names=OPENARM_JOINTS,
-            model_path=OPENARM_V10_BIMANUAL_FK_MODEL,
-        ),
-    )
-    first_right = PoseStamped(frame_id="teleop_openarm_right", position=[0.1, 0.0, 0.0])
-    next_left = PoseStamped(frame_id="teleop_openarm_left", position=[0.0, 0.1, 0.0])
-
-    task.on_cartesian_command(PoseStamped(frame_id="teleop_openarm_left"), t_now=1.0)
-    task.on_cartesian_command(first_right, t_now=1.1)
-    task.on_cartesian_command(next_left, t_now=1.2)
-
-    assert task._target_poses["teleop_openarm_left"] is next_left
-    assert task._target_poses["teleop_openarm_right"] is first_right
-
-
-def test_openarm_bimanual_task_rejects_mismatched_joint_names() -> None:
-    with pytest.raises(ValueError, match="joint names"):
-        OpenArmBimanualIKTask(
-            "teleop_openarm",
-            OpenArmBimanualIKTaskConfig(
-                joint_names=[f"bad_joint{i}" for i in range(14)],
-                model_path=OPENARM_V10_BIMANUAL_FK_MODEL,
-            ),
-        )
-
-
-def test_openarm_bimanual_task_rejects_missing_end_effector_frame() -> None:
-    with pytest.raises(ValueError, match="no frame"):
-        OpenArmBimanualIKTask(
-            "teleop_openarm",
-            OpenArmBimanualIKTaskConfig(
-                joint_names=OPENARM_JOINTS,
-                model_path=OPENARM_V10_BIMANUAL_FK_MODEL,
-                left_end_effector_frame="missing_frame",
-            ),
-        )
-
-
 def test_right_controller_pose_activates_without_left_controller_data() -> None:
     task = _task()
 
@@ -647,30 +587,6 @@ def test_coordinator_creates_xarm7_pink_task_with_teleop_route_key() -> None:
     assert isinstance(task, XArm7IKTask)
     assert task.name == "teleop_xarm"
     assert task._config.end_effector_frame == "link7"
-
-
-def test_coordinator_creates_single_arm_pink_task_for_piper() -> None:
-    coordinator = ControlCoordinator.__new__(ControlCoordinator)
-
-    task = coordinator._create_task_from_config(
-        TaskConfig(
-            name="teleop_piper",
-            type="piper_pink_ik",
-            joint_names=PIPER_JOINTS,
-            model_path=PIPER_FK_MODEL,
-            hand="right",
-            gripper_joint="arm/gripper",
-            gripper_open_pos=0.0,
-            gripper_closed_pos=0.035,
-        )
-    )
-
-    assert isinstance(task, PiperPinkIKTask)
-    assert task.name == "teleop_piper"
-    assert task._config.end_effector_frame == "gripper_base"
-    assert task._config.hand == "right"
-    assert task._config.damping_task_cost == 1e-3
-    assert task.claim().joints == frozenset([*PIPER_JOINTS, "arm/gripper"])
 
 
 def test_coordinator_requires_end_effector_frame_for_single_arm_pink_task() -> None:
@@ -726,7 +642,7 @@ def test_coordinator_rejects_removed_openarm_bimanual_pink_task_type() -> None:
             TaskConfig(
                 name="teleop_openarm",
                 type="openarm_bimanual_pink_ik",
-                model_path=OPENARM_V10_BIMANUAL_FK_MODEL,
+                model_path=XARM7_FK_MODEL,
             )
         )
 
@@ -765,3 +681,155 @@ def test_single_arm_pink_task_requests_cartesian_and_button_subscriptions() -> N
 
     assert coordinator._has_cartesian_target_task()
     assert coordinator._has_teleop_task()
+
+
+def test_acceleration_limit_disabled_when_max_joint_acceleration_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = _task(max_joint_acceleration=0.0)
+    task.on_cartesian_command(PoseStamped(frame_id="teleop_xarm"), t_now=1.0)
+    captured_kwargs: dict[str, Any] = {}
+
+    def capture(
+        _configuration: object, _tasks: list[object], _dt: float, **kwargs: Any
+    ) -> np.ndarray:
+        captured_kwargs.update(kwargs)
+        return np.zeros(7, dtype=float)
+
+    monkeypatch.setattr(pink_teleop_task, "solve_ik", capture)
+    assert task.compute(_state(t_now=1.0, dt=0.1)) is not None
+    assert "limits" not in captured_kwargs
+    assert task._acceleration_limit is None
+
+
+def test_acceleration_limit_passed_to_solve_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = _task(max_joint_acceleration=20.0)
+    task.on_cartesian_command(PoseStamped(frame_id="teleop_xarm"), t_now=1.0)
+    captured_kwargs: dict[str, Any] = {}
+
+    def capture(
+        _configuration: object, _tasks: list[object], _dt: float, **kwargs: Any
+    ) -> np.ndarray:
+        captured_kwargs.update(kwargs)
+        return np.zeros(7, dtype=float)
+
+    monkeypatch.setattr(pink_teleop_task, "solve_ik", capture)
+    assert task.compute(_state(t_now=1.0, dt=0.1)) is not None
+
+    assert "limits" in captured_kwargs
+    limits = list(captured_kwargs["limits"])
+    accel_limits = [lim for lim in limits if isinstance(lim, AccelerationLimit)]
+    assert len(accel_limits) == 1
+    assert np.allclose(accel_limits[0].a_max, np.full(7, 20.0))
+
+
+def test_velocity_smoothing_alpha_passthrough_when_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = _task(velocity_smoothing_alpha=1.0)
+    task.on_cartesian_command(PoseStamped(frame_id="teleop_xarm"), t_now=1.0)
+    velocities = iter([np.full(7, 0.10), np.full(7, 0.30)])
+
+    def stream(*_args: object, **_kwargs: object) -> np.ndarray:
+        return next(velocities)
+
+    monkeypatch.setattr(pink_teleop_task, "solve_ik", stream)
+
+    first = task.compute(_state(t_now=1.0, dt=0.1))
+    second = task.compute(_state(t_now=1.1, dt=0.1))
+    assert first is not None
+    assert second is not None
+    assert first.positions is not None
+    assert second.positions is not None
+    # No EMA. State snapshot resets joints to zero each tick, so position is v*dt.
+    assert np.allclose(first.positions, np.full(7, 0.01))
+    assert np.allclose(second.positions, np.full(7, 0.03))
+
+
+def test_velocity_smoothing_alpha_blends_previous_velocity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = _task(velocity_smoothing_alpha=0.5)
+    task.on_cartesian_command(PoseStamped(frame_id="teleop_xarm"), t_now=1.0)
+    velocities = iter([np.full(7, 0.10), np.full(7, 0.30)])
+
+    def stream(*_args: object, **_kwargs: object) -> np.ndarray:
+        return next(velocities)
+
+    monkeypatch.setattr(pink_teleop_task, "solve_ik", stream)
+
+    first = task.compute(_state(t_now=1.0, dt=0.1))
+    second = task.compute(_state(t_now=1.1, dt=0.1))
+    assert first is not None
+    assert second is not None
+    assert first.positions is not None
+    assert second.positions is not None
+    # First tick: no prev -> raw 0.10 * 0.1 = 0.01 from zero state snapshot.
+    assert np.allclose(first.positions, np.full(7, 0.01))
+    # Second tick: blended v = 0.5*0.30 + 0.5*0.10 = 0.20; pos = 0 + 0.20 * 0.1 = 0.02
+    assert np.allclose(second.positions, np.full(7, 0.02))
+
+
+def test_velocity_smoothing_state_resets_on_disengage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = _task(timeout=0.1, velocity_smoothing_alpha=0.5)
+    task.on_cartesian_command(PoseStamped(frame_id="teleop_xarm"), t_now=1.0)
+    velocities = iter([np.full(7, 0.10), np.full(7, 0.30)])
+
+    def stream(*_args: object, **_kwargs: object) -> np.ndarray:
+        return next(velocities)
+
+    monkeypatch.setattr(pink_teleop_task, "solve_ik", stream)
+
+    first = task.compute(_state(t_now=1.0, dt=0.1))
+    assert first is not None
+    assert task._prev_velocity is not None
+
+    # Force a timeout-driven disengage; the task should clear smoothing state.
+    assert task.compute(_state(t_now=1.5, dt=0.1)) is None
+    assert task._prev_velocity is None
+
+    # Re-engage: next velocity must be applied raw (no carryover from prev engage).
+    task.on_cartesian_command(PoseStamped(frame_id="teleop_xarm"), t_now=2.0)
+    resumed = task.compute(_state(t_now=2.0, dt=0.1))
+    assert resumed is not None
+    assert resumed.positions is not None
+    # State snapshot is zero again; first post-reengage velocity is applied raw (no prev).
+    assert np.allclose(resumed.positions, np.full(7, 0.03))
+
+
+def test_manipulability_disabled_by_default() -> None:
+    task = _task()
+
+    assert not any(isinstance(t, ManipulabilityTask) for t in task._pink_tasks)
+
+
+def test_manipulability_enabled_adds_task() -> None:
+    task = _task(manipulability_cost=0.3, manipulability_rate=1.5)
+
+    manip = next((t for t in task._pink_tasks if isinstance(t, ManipulabilityTask)), None)
+    assert manip is not None
+    assert manip.cost == 0.3
+    assert manip.manipulability_rate == 1.5
+
+
+def test_manipulability_enabled_is_passed_to_solve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = _task(manipulability_cost=0.3)
+    task.on_cartesian_command(PoseStamped(frame_id="teleop_xarm"), t_now=1.0)
+    solve_tasks: list[object] = []
+
+    def capture(
+        _configuration: object, tasks: list[object], *_args: object, **_kwargs: object
+    ) -> np.ndarray:
+        solve_tasks.extend(tasks)
+        return np.zeros(7, dtype=float)
+
+    monkeypatch.setattr(pink_teleop_task, "solve_ik", capture)
+
+    assert task.compute(_state(t_now=1.0, dt=0.1)) is not None
+    assert any(isinstance(t, ManipulabilityTask) for t in solve_tasks)

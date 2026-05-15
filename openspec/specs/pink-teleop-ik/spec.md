@@ -173,23 +173,19 @@ Pink-backed robot-specific IK tasks SHALL own their robot-specific Pink solver, 
 - **WHEN** the coordinator constructs an `xarm7_pink_ik` task with only generic coordinator fields and the XArm7 task type
 - **THEN** the XArm7 Pink IK task SHALL use its task-local defaults for solver damping, end-effector frame, frame objective costs, frame gain, posture objective settings, and damping-task setting
 
-#### Scenario: OpenArm Pink defaults are local to OpenArm task
-- **WHEN** the coordinator constructs an `openarm_bimanual_pink_ik` task with only generic coordinator fields and the OpenArm task type
-- **THEN** the OpenArm Pink IK task SHALL use its task-local defaults for solver damping, left and right target task names, left and right end-effector frames, frame objective costs, and frame gain
-
 #### Scenario: Generic single-arm Pink configuration is explicit
 - **WHEN** the coordinator constructs a `single_arm_pink_ik` task
 - **THEN** the task SHALL require an explicit model path and end-effector frame and MAY accept explicit Pink solver/objective settings because it has no robot-specific defaults of its own
 
 ### Requirement: Coordinator task config excludes Pink tuning internals
-The coordinator task configuration SHALL NOT expose robot-specific Pink tuning fields for concrete robot task types such as XArm7 and OpenArm. For reusable generic Pink task types that are not tied to one robot, the coordinator task configuration MAY expose the Pink tuning and frame fields required to select the robot-specific behavior at the blueprint boundary.
+The coordinator task configuration SHALL NOT expose robot-specific Pink tuning fields for concrete robot task types such as XArm7. For reusable generic Pink task types that are not tied to one robot, the coordinator task configuration MAY expose the Pink tuning and frame fields required to select the robot-specific behavior at the blueprint boundary.
 
 #### Scenario: Coordinator config remains focused on orchestration
 - **WHEN** a concrete robot Pink-backed IK task is declared through `TaskConfig`
 - **THEN** the config SHALL include only coordinator-level task construction inputs such as task name, task type, joint names, priority, model path override, hand, gripper settings, timeout, and max joint delta
 
 #### Scenario: Coordinator no longer forwards Pink internals to concrete robot tasks
-- **WHEN** `ControlCoordinator` creates an XArm7 or OpenArm Pink IK task from `TaskConfig`
+- **WHEN** `ControlCoordinator` creates an XArm7 Pink IK task from `TaskConfig`
 - **THEN** it SHALL stop requiring coordinator-level `pink_*` values and SHALL allow the concrete robot task config defaults to define Pink-specific behavior
 
 #### Scenario: Coordinator forwards explicit generic single-arm Pink settings
@@ -197,45 +193,15 @@ The coordinator task configuration SHALL NOT expose robot-specific Pink tuning f
 - **THEN** it SHALL forward the explicit model, end-effector frame, solver, frame objective, posture, and damping settings configured for that generic reusable task
 
 ### Requirement: Existing Pink IK behavior is preserved after localization
-Moving Pink defaults out of coordinator configuration SHALL preserve the existing observable behavior of in-repository XArm7 and OpenArm Pink teleop task construction.
+Moving Pink defaults out of coordinator configuration SHALL preserve the existing observable behavior of in-repository XArm7 Pink teleop task construction.
 
 #### Scenario: XArm7 construction preserves previous defaults
 - **WHEN** an XArm7 Pink IK task is created through the coordinator after Pink settings are localized
 - **THEN** it SHALL still use the XArm7 model fallback, `link7` end-effector frame, existing frame/posture/damping defaults, timeout handling, joint-delta safety, and gripper behavior
 
-#### Scenario: OpenArm construction preserves previous defaults
-- **WHEN** an OpenArm bimanual Pink IK task is created through the coordinator after Pink settings are localized
-- **THEN** it SHALL still use the OpenArm model fallback, existing left/right target names, existing left/right end-effector frames, existing frame objective defaults, timeout handling, and joint-delta safety
-
 #### Scenario: Direct task-level tests can still tune Pink details
 - **WHEN** a focused unit test or robot-specific caller directly instantiates a concrete Pink IK task config
 - **THEN** it MAY still set task-local Pink options exposed by that concrete task config without reintroducing coordinator-level Pink fields
-
-### Requirement: OpenArm Pink IK task constructs a unified bimanual IK problem
-The system SHALL provide an OpenArm-specific Pink teleop IK task that reuses the shared Pink IK base and constructs one whole-robot Pink problem with left and right frame tasks for the configured OpenArm model, joint names, and end-effector frames.
-
-#### Scenario: OpenArm task validates configured model joints
-- **WHEN** an OpenArm Pink IK task is created from coordinator or visualization configuration
-- **THEN** it SHALL load the configured bimanual OpenArm URDF/MJCF model and validate that configured OpenArm whole-robot joint names match actuated model joints used for command output
-
-#### Scenario: OpenArm task validates both end-effector frames
-- **WHEN** the OpenArm Pink IK task initializes its robot-specific frame tasks
-- **THEN** it SHALL fail startup with a clear error if either configured OpenArm end-effector frame is absent from the model
-
-### Requirement: OpenArm Pink IK supports left and right targets in one solve
-The system SHALL support distinct left and right Quest target updates while solving both targets through one Pink `solve_ik` call over one OpenArm robot configuration.
-
-#### Scenario: Independent target state
-- **WHEN** only one Quest hand updates its OpenArm target
-- **THEN** the other OpenArm target SHALL remain at its last desired pose while the next Pink solve still considers all active targets in the same robot configuration
-
-#### Scenario: Shared joints are coordinated by one optimization
-- **WHEN** the OpenArm model includes joints that influence both end-effector targets or otherwise couple the two arms
-- **THEN** the OpenArm Pink IK task SHALL solve those joints as part of the same optimization rather than commanding them from independent per-arm solves
-
-#### Scenario: Shared solver plumbing remains coordinator-compatible
-- **WHEN** an OpenArm Pink IK task returns a valid solve result
-- **THEN** it SHALL emit `JointCommandOutput` or desired `JointState` data ordered by configured OpenArm whole-robot joint names and compatible with existing coordinator/visualization consumers
 
 ### Requirement: Existing XArm7 Pink teleop uses shared single-arm implementation
 The existing XArm7 Pink teleop behavior SHALL be preserved while its single-frame control flow is provided by the shared single-arm Pink teleop implementation.
