@@ -1,0 +1,70 @@
+# .understandignore — patterns for files/dirs to exclude from analysis
+# Syntax: same as .gitignore (globs, # comments, ! negation, trailing / for dirs)
+
+# --- Build/output/cache (always excluded) ---
+*.pyc
+*.egg-info/
+*venv*/
+.venv*/
+.direnv/
+.mypy_cache*
+htmlcov/
+.coverage
+.coverage.*
+results/
+**/cpp/result/
+
+# --- Vendored / generated / large data ---
+docs/
+assets/
+/data/
+data/*.lfs/
+native/
+stubs/
+misc/
+docker/
+.devcontainer/
+
+# --- Tooling & shell scripts ---
+scripts/
+bin/
+
+# --- Examples (kept out of graph; reference only) ---
+examples/
+
+# --- Deprecated / experimental subpackages ---
+dimos/agents_deprecated/
+dimos/experimental/
+
+# --- E2E tests & vendored web frontends ---
+dimos/e2e_tests/
+dimos/web/command-center-extension/
+dimos/web/websocket_vis/
+dimos/web/dimos_interface/
+
+# --- Test fixtures ---
+**/fixtures/
+**/testdata/
+
+# --- Model artifacts & weights ---
+*.pt
+*.onnx
+*.safetensors
+*mobileclip*
+FastSAM-x.pt
+yolo11n.pt
+
+# --- Misc artifacts ---
+*.so
+*.rrd
+*.speedscope.json
+*.foxe
+*.mov
+*.mp4
+*.gif
+recording*.db
+/logs/
+thread_monitor_report.csv
+.claude/
+**/CLAUDE.md
+CLAUDE.MD
